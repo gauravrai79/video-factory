@@ -1,0 +1,4 @@
+fsn,title,category,tier,color,pattern,image_url,image_urls,usps,callouts,hero
+FSN001,Men's Slim Fit Cotton Shirt,shirt,basic,sky blue,solid,https://example.com/fsn001_front.jpg,,Wrinkle-free;Breathable cotton;Slim fit,Wrinkle-free;Breathable,false
+FSN002,Women's Floral Print Maxi Dress,dress,premium,multicolor,floral,https://example.com/fsn002_front.jpg,https://example.com/fsn002_front.jpg;https://example.com/fsn002_back.jpg;https://example.com/fsn002_side.jpg,Flowy chiffon;True-to-photo print;All-day comfort,Flowy chiffon;True-to-photo print,true
+FSN003,Unisex Graphic Hoodie,hoodie,basic,charcoal,graphic,https://example.com/fsn003_front.jpg,,Soft fleece lining;Bold print;Unisex fit,Soft fleece;Bold print,false

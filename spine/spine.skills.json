@@ -1,0 +1,97 @@
+{
+  "//": "Spine registry manifest for the Video Factory project. Modeled on projects/report-factory/spine.skills.json. Discovered via POST /registry/discover; its agent + skills appear in Spine's /skills, /agents and the Skills & Agents console page.",
+
+  "project": "video-factory",
+  "version": "0.1.0",
+  "title": "Video Factory",
+  "description": "Image-to-video automation for ecommerce catalogs. CSV of SKUs -> generated, finished, QC-gated short videos at scale.",
+
+  "source": {
+    "//": "Spine §15: own repo, one-way auto-synced into TheSpine/projects/video-factory/. Owner edits here; the mirror is downstream/read-only.",
+    "model": "synced",
+    "repo": "BillGoslingGREPO01/video-factory",
+    "branch": "main"
+  },
+
+  "tenants": ["flipkart"],
+  "allowed_tenants": ["flipkart", "bgo_internal"],
+
+  "launchUrl": "${SPINE_VF_BASE_URL_UI}",
+
+  "connector": {
+    "//": "Spine's connector hub calls these endpoints under the allow-list. Reads run live; writes pass the approval gate.",
+    "base_url_env": "SPINE_VF_BASE_URL",
+    "credential_env": ["SPINE_VF_EMAIL", "SPINE_VF_PASSWORD"],
+    "allowed_tenants": ["flipkart", "bgo_internal"],
+    "endpoints": {
+      "ingest_batch":   { "method": "POST", "path": "/batches",                 "gate": "read"  },
+      "list_jobs":      { "method": "GET",  "path": "/jobs",                     "gate": "read"  },
+      "get_job":        { "method": "GET",  "path": "/jobs/{job_id}",            "gate": "read"  },
+      "generate":       { "method": "POST", "path": "/jobs/{job_id}/generate",   "gate": "approval" },
+      "qc_decision":    { "method": "POST", "path": "/jobs/{job_id}/qc",         "gate": "approval" },
+      "deliver":        { "method": "POST", "path": "/jobs/{job_id}/deliver",    "gate": "approval" }
+    }
+  },
+
+  "agent": {
+    "id": "video_factory",
+    "name": "Video Factory Agent",
+    "aop": "video_factory@0.1.0",
+    "framework": "google-adk",
+    "model_env": "VF_AGENT_MODEL",
+    "provider_env": "ADK_PROVIDER"
+  },
+
+  "skills": [
+    {
+      "id": "build_prompt",
+      "name": "Build generation prompt",
+      "status": "Draft",
+      "gate": "read",
+      "tools": ["prompt_builder"],
+      "description": "Turn an FSN manifest row (USPs, callouts, tier, images) into an optimized image-to-video prompt + model routing. The reshoot-rate cost lever."
+    },
+    {
+      "id": "generate_clip",
+      "name": "Generate clip (fal.ai)",
+      "status": "Draft",
+      "gate": "approval",
+      "human_approval_required": false,
+      "tools": ["kling_video", "seedance_video", "seedance_replicate"],
+      "description": "Image-to-video via fal.ai (Kling default, Seedance for hero SKUs), Replicate secondary. Writes a clip; governed + audited.",
+      "guardrails": ["never_empty_output"]
+    },
+    {
+      "id": "finish_clip",
+      "name": "Finish clip to spec (FFmpeg)",
+      "status": "Draft",
+      "gate": "read",
+      "tools": ["finishing"],
+      "description": "Deterministic: dimensions, two-pass size band, duration clamp, watermark, callout supers, music mux, end-frame rule."
+    },
+    {
+      "id": "qc_check",
+      "name": "QC auto-check + flag",
+      "status": "Draft",
+      "gate": "read",
+      "tools": ["qc_flagger"],
+      "description": "Auto-checkable SOW params (dims/size/duration/watermark/spell-check/color delta) + VLM flagging (multiple models, missing garment, logo distortion)."
+    },
+    {
+      "id": "deliver_clip",
+      "name": "Deliver to Drive + writeback",
+      "status": "Draft",
+      "gate": "approval",
+      "human_approval_required": true,
+      "central_review_queue": true,
+      "tools": ["delivery"],
+      "description": "On QC approval, publish to Google Drive and write status back to the manifest. The human QC gate maps to Spine's approval queue."
+    }
+  ],
+
+  "knowledge": [
+    "knowledge/sow_spec.md",
+    "knowledge/prompting/kling.md",
+    "knowledge/prompting/seedance.md"
+  ]
+}

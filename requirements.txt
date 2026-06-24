@@ -1,0 +1,24 @@
+# Video Factory — dependencies
+
+# --- Phase 1 vertical slice (CLI) ---
+requests>=2.31
+python-dotenv>=1.0
+PyYAML>=6.0
+
+# --- Agents (Spine standard: Google ADK) ---
+google-adk>=1.30           # Prompt-Builder / QC-flagger / Rework agents
+# anthropic>=0.40          # optional alt provider for agents
+# google-generativeai      # pulled in by google-adk for Gemini
+
+# --- Phase 2 (orchestration) ---
+# Queue: the default `sync` backend needs NOTHING extra (stdlib only) — it runs on Windows.
+# The `rq` backend (VF_QUEUE_BACKEND=rq) needs these + a reachable Redis (Linux/macOS workers):
+# redis>=5.0
+# rq>=1.16                 # queue worker (RQ workers fork -> Linux/macOS)
+
+# --- Phase 2+ (API + Postgres + delivery; not required to run the batch locally) ---
+# fastapi>=0.110
+# uvicorn[standard]>=0.29
+# sqlalchemy>=2.0
+# psycopg[binary]>=3.1     # Postgres driver (Railway)
+# google-api-python-client # Google Drive delivery

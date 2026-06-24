@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local state + generated media (regenerable)
+var/
+out/
+assets/clips/
+assets/finished/
+*.mp4
+
+# Keep sample assets and music placeholders
+!samples/**
+!assets/music/.gitkeep
+
+# IDE
+.vscode/
+.idea/
