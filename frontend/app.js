@@ -48,8 +48,16 @@ async function refreshSummary() {
     ${draining ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ""}</div>`;
   $("#stats").innerHTML = cards + drainCard;
 
+  // live worker banner — the at-a-glance "what's happening right now"
+  const banner = $("#worker-banner");
+  if (draining) {
+    banner.hidden = false; banner.className = "worker-banner run";
+    banner.innerHTML = `<span class="spin"></span> Worker running — generating &amp; finishing clips… <b>${d.done}/${d.total}</b> done`;
+  } else {
+    banner.hidden = true;
+  }
   // poll faster while the worker is draining
-  setPoll(draining ? 1500 : 5000);
+  setPoll(draining ? 1200 : 5000);
 }
 
 // ---- jobs table ----
@@ -81,16 +89,27 @@ function outputCell(j) {
   return `<span class="dash">—</span>`;
 }
 
+function costCell(j) {
+  // Real spend ONLY for execute jobs. Dry runs show the price as an estimate, never as spend.
+  if (j.execute) {
+    return j.cost_usd != null ? `<b>${fmtUsd(j.cost_usd)}</b>`
+                              : `<span class="dash">~${fmtUsd(j.est_cost_usd)}</span>`;
+  }
+  return `<span class="est">~${fmtUsd(j.cost_usd ?? j.est_cost_usd)}<em>est</em></span>`;
+}
+
 function rowHtml(j) {
-  const cost = j.cost_usd != null ? fmtUsd(j.cost_usd) : `<span class="dash">~${fmtUsd(j.est_cost_usd)}</span>`;
   const model = (j.model || "—") + (j.fell_back ? " ⤳" : "");
+  const mode = j.execute ? `<span class="mode live">live</span>` : `<span class="mode dry">dry</span>`;
+  const errFlag = j.state === "failed" && j.error ? `<span class="row-err" title="${esc(j.error)}">⚠</span>` : "";
+  const imgFlag = !j.has_image ? `<span class="row-err" title="no image_url — generation will fail">⚠ no image</span>` : "";
   return `<tr>
-    <td class="fsn">${esc(j.fsn)}</td>
-    <td class="prod" title="${esc(j.title)}">${esc(j.title || "—")}</td>
+    <td class="fsn" title="${esc(j.fsn)}">${esc(j.fsn)}</td>
+    <td class="prod" title="${esc(j.title)}">${esc(j.title || "—")} ${imgFlag}</td>
     <td>${esc(j.tier)}</td>
-    <td>${esc(model)}</td>
-    <td><span class="badge s-${j.state}">${j.state}</span></td>
-    <td>${cost}</td>
+    <td>${esc(model)} ${mode}</td>
+    <td><span class="badge s-${j.state}">${j.state}</span>${errFlag}</td>
+    <td>${costCell(j)}</td>
     <td>${slaBar(j)}</td>
     <td>${outputCell(j)}</td>
     <td><button class="linklike" data-job="${j.job_id}">${j.state === "qc" ? "review →" : "view →"}</button></td>
@@ -111,6 +130,7 @@ async function openJob(jobId) {
       <button class="btn-approve" data-qc="approve" data-job="${v.job_id}">✓ Approve &amp; deliver</button>
       <button class="btn-reject" data-qc="reject" data-job="${v.job_id}">✕ Reject → rework</button>
     </div>` : "";
+  const errBanner = v.error ? `<div class="err-banner"><b>Failed${v.failed_stage ? ` at ${esc(v.failed_stage)}` : ""}:</b> ${esc(v.error)}${!v.has_image ? "<br>↳ This SKU has no <b>image_url</b> — add a direct product image URL and re-ingest." : ""}</div>` : "";
   const viol = (v.violations || []).map((x) => `<div class="viol">⚠ ${esc(x)}</div>`).join("");
   const held = v.held ? `<div class="held">⏸ held: ${esc(v.held)} — ${esc((v.result && v.result.note) || "")}</div>` : "";
 
@@ -118,7 +138,7 @@ async function openJob(jobId) {
     <h2>${esc(v.title || v.fsn)}</h2>
     <div class="fsn">${esc(v.fsn)} · <span class="badge s-${v.state}">${v.state}</span></div>
     ${hasVideo ? `<video controls preload="metadata" src="${vsrc}"></video>` : ""}
-    ${held}${viol}
+    ${errBanner}${held}${viol}
     ${qcBlock}
     <div class="kv">
       <div class="k">Model</div><div class="v">${esc(v.model)}${v.force_model ? " (pinned)" : ""}${v.fell_back ? " · fell back" : ""}</div>
@@ -175,8 +195,14 @@ $("#ingest-form").addEventListener("submit", async (e) => {
   }
   try {
     const r = await api("/api/ingest", { method: "POST", body: fd });
-    msg.className = "hint ok";
-    msg.textContent = `Created ${r.created.length}, reused ${r.reused.length}. ${r.drain_started ? "Running…" : ""}`;
+    if (r.warnings && r.warnings.length) {
+      msg.className = "hint err";
+      msg.innerHTML = `Created ${r.created.length}, reused ${r.reused.length}.<br>⚠ ${r.warnings.map(esc).join("<br>⚠ ")}`
+        + (r.blocked_run ? "<br><b>Run blocked</b> — fix the CSV (add image URLs) and re-ingest, or these will fail." : "");
+    } else {
+      msg.className = "hint ok";
+      msg.textContent = `Created ${r.created.length}, reused ${r.reused.length}.` + (r.drain_started ? " Worker started — watch the banner above the table." : "");
+    }
     refreshAll();
   } catch (err) {
     msg.className = "hint err"; msg.textContent = "Error: " + err.message;

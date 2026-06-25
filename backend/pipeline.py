@@ -199,7 +199,8 @@ def execute_job(
     gen, used_plan = _generate_resilient(store, job, plan, row, spec, out_clip, execute,
                                          allow_fallback=p.get("force_model") is None)
     if not gen.success:
-        store.transition(job, State.FAILED, {"error": gen.error})
+        store.transition(job, State.FAILED, detail={"error": gen.error},
+                         result_update={"error": gen.error, "failed_stage": "generation"})
         return job
 
     clip_for_finish = gen.output_path if execute else stand_in_clip
@@ -218,7 +219,8 @@ def execute_job(
                 for i, c in enumerate(row.callouts[:2])]
     fr = finish(clip_for_finish, out_final, spec=spec, callouts=callouts, music_path=music_path)
     if not fr.success:
-        store.transition(job, State.FAILED, {"error": fr.error})
+        store.transition(job, State.FAILED, detail={"error": fr.error},
+                         result_update={"error": fr.error, "failed_stage": "finishing"})
         return job
     store.transition(job, State.QC, result_update={"finished": fr.probe,
                                                     "finished_path": fr.output_path})

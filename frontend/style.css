@@ -91,7 +91,18 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; color: var(--muted); font-weight: 500; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
 td { padding: 10px; border-bottom: 1px solid #20262f; vertical-align: middle; }
 tr:hover td { background: #131a24; }
-.fsn { font-family: var(--mono); font-size: 12px; color: var(--cyan); }
+.fsn { font-family: var(--mono); font-size: 12px; color: var(--cyan); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#jobs-table { table-layout: fixed; width: 100%; }
+#jobs-table th:nth-child(2), #jobs-table td:nth-child(2) { width: 30%; }
+
+/* worker / warning banners */
+.worker-banner { border-radius: 9px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; display: flex; align-items: center; gap: 10px; }
+.worker-banner.run { background: #11233d; border: 1px solid #1f4b7a; color: #79b8ff; }
+.worker-banner.warn { background: #2c2410; border: 1px solid #5a4a1a; color: #e3b341; }
+.worker-banner .spin { width: 14px; height: 14px; border: 2px solid #2b4a6b; border-top-color: #79b8ff; border-radius: 50%; animation: spin 0.8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.err-banner { background: #2a1718; border: 1px solid #5a2a2a; color: #ffb4ab; border-radius: 8px; padding: 10px 12px; font-size: 12px; margin: 10px 0; word-break: break-word; }
+.row-err { color: var(--red); cursor: help; margin-left: 5px; }
 .prod { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { text-align: center; color: var(--muted); padding: 30px; }
 
@@ -104,6 +115,12 @@ tr:hover td { background: #131a24; }
 .s-delivered { background: #143a2a; color: #56d364; }
 .s-rework { background: #3a2417; color: #f0883e; }
 .s-failed { background: #3a1a1d; color: #ff7b72; }
+
+.est { color: var(--muted); }
+.est em { font-style: normal; font-size: 10px; margin-left: 4px; padding: 1px 5px; border-radius: 4px; background: #2a2f3a; color: #8b96a5; text-transform: uppercase; letter-spacing: .03em; }
+.mode { font-size: 10px; padding: 1px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: .03em; vertical-align: middle; }
+.mode.live { background: #16331f; color: #7ee787; }
+.mode.dry { background: #2a2f3a; color: #8b96a5; }
 
 .sla-mini { width: 80px; }
 .sla-mini .bar { margin: 0; }

@@ -71,6 +71,9 @@ def _job_view(store: JobStore, job, *, full: bool = False) -> dict[str, Any]:
         "finished": job.result.get("finished"),
         "violations": job.result.get("violations"),
         "held": job.result.get("held"),
+        "error": job.result.get("error"),
+        "failed_stage": job.result.get("failed_stage"),
+        "has_image": bool(sku.get("image_url") or sku.get("image_urls")),
         "sla": {"elapsed_s": s.elapsed_s, "budget_s": s.budget_s,
                 "breached": s.breached, "remaining_s": s.remaining_s},
         "media": {k: _has_media(job.fsn, k) for k in MEDIA_KINDS},
@@ -148,6 +151,18 @@ async def ingest(
     if not rows:
         raise HTTPException(400, "no valid SKU rows (need an 'fsn' column)")
 
+    # Pre-flight: generation needs a DIRECT image URL, not a product-page URL. Warn (don't silently
+    # fail) so the operator sees the problem before a paid run instead of after N failed jobs.
+    no_image = [r.fsn for r in rows if not (r.image_url or r.image_urls)]
+    page_urls = [r.fsn for r in rows if r.fsn.startswith("http")]
+    warnings: list[str] = []
+    if no_image:
+        warnings.append(f"{len(no_image)} row(s) have no image_url — generation will fail for them. "
+                        "Provide a direct product image URL (e.g. a .jpg), not a product-page link.")
+    if page_urls:
+        warnings.append(f"{len(page_urls)} row(s) use a URL as the FSN — looks like a product-page "
+                        "link in the 'fsn' column. FSN should be the SKU id; the image goes in 'image_url'.")
+
     store = JobStore()
     spec = get_spec()
     created, reused = [], []
@@ -159,8 +174,11 @@ async def ingest(
         )
         (created if is_new else reused).append(job.fsn)
 
-    started = runner.start_background_drain() if auto_run else False
+    # Don't auto-run a paid batch that will obviously fail; surface the warning and let the operator fix it.
+    block_run = execute and bool(no_image)
+    started = (runner.start_background_drain() if (auto_run and not block_run) else False)
     return {"created": created, "reused": reused, "count": len(rows),
+            "warnings": warnings, "blocked_run": block_run,
             "drain_started": started, "drain": runner.progress()}
 
 
