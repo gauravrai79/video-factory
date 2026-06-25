@@ -66,9 +66,11 @@ Routes through **fal.ai** (primary) with **Replicate** as secondary. One integra
 changing a config string. This protects against vendor shutdowns (e.g. Sora's 2026 sunset) and lets
 you A/B models per SKU category.
 
-- **Default — Kling 3.0 Pro** (`model_variant` flag): strong multi-angle subject consistency, 1080p,
-  lowest per-second cost in tier, failed tasks don't consume credits.
-- **Fallback for hero SKUs — Seedance 2.0**: up to 9 reference images for garment fidelity.
+- **Default — Kling 2.1 Standard** (`VF_KLING_TIER`): the cost-smart volume tier — $0.56 per 10s clip
+  vs $0.98 for Pro (~43% cheaper, ~$8K/mo less at 20K). Failed tasks don't consume credits. Bump to
+  `pro` only if measured reshoot rate justifies it — generation cost dominates the P&L.
+- **Escalation for hero SKUs / difficult prints — Seedance 2.0**: up to 9 reference images for garment
+  fidelity (~$3.03 per 10s clip). Routed automatically; reserve the spend for SKUs that need it.
 
 ### Finishing layer — deterministic, 100% automatable
 Everything the SOW mandates that isn't generative: enforce dimensions, two-pass encode to the 6–10 MB

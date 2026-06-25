@@ -67,6 +67,7 @@ def _job_view(store: JobStore, job, *, full: bool = False) -> dict[str, Any]:
         "priority": p.get("priority"),
         "est_cost_usd": p.get("est_cost_usd"),
         "cost_usd": (job.result.get("generation") or {}).get("cost_usd"),
+        "request_id": (job.result.get("generation") or {}).get("request_id"),
         "fell_back": (job.result.get("generation") or {}).get("fell_back"),
         "finished": job.result.get("finished"),
         "violations": job.result.get("violations"),

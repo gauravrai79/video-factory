@@ -207,6 +207,7 @@ def execute_job(
     store.transition(job, State.FINISHING, result_update={
         "generation": {"model": gen.model, "provider": gen.provider,
                        "cost_usd": gen.cost_usd, "dry_run": not execute,
+                       "request_id": gen.request_id,
                        "fell_back": used_plan.model != plan.model}})
 
     if not clip_for_finish or not Path(clip_for_finish).is_file():

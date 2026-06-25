@@ -145,6 +145,7 @@ async function openJob(jobId) {
       <div class="k">Mode</div><div class="v">${v.execute ? "execute (paid)" : "dry-run"}${v.human_qc ? " · human QC" : ""}</div>
       <div class="k">Est / actual</div><div class="v">~${fmtUsd(v.est_cost_usd)} / ${fmtUsd(v.cost_usd)}</div>
       <div class="k">Priority</div><div class="v">${esc(v.priority)}</div>
+      ${v.request_id ? `<div class="k">fal request</div><div class="v">${esc(v.request_id)}</div>` : ""}
       <div class="k">SLA</div><div class="v">${fmtDur(v.sla.elapsed_s)} / ${fmtDur(v.sla.budget_s)} ${v.sla.breached ? "⚠ BREACH" : "ok"}</div>
       ${fin.width ? `<div class="k">Output</div><div class="v">${fin.width}×${fin.height} · ${fin.duration_s}s · ${fin.size_mb}MB · ${fin.video_codec}</div>` : ""}
     </div>

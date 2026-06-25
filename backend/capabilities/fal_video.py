@@ -32,6 +32,7 @@ class GenResult:
     cost_usd: float = 0.0
     duration_seconds: float = 0.0
     seed: int | None = None
+    request_id: str | None = None     # fal request id — traceable against the fal usage dashboard
     error: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -50,8 +51,9 @@ def _simulated_failure(model: str) -> str | None:
 
 
 def _poll_fal(model_path: str, payload: dict[str, Any], *, base: str, poll_s: int = 5,
-              timeout_s: int = 600) -> dict[str, Any]:
-    """Submit to the fal queue API and poll to completion. Returns the result JSON."""
+              timeout_s: int = 600) -> tuple[dict[str, Any], str | None]:
+    """Submit to the fal queue API and poll to completion. Returns (result JSON, request_id).
+    The request_id is what reconciles a job against a line in the fal usage dashboard."""
     key = _fal_key()
     if not key:
         raise GenerationError("FAL_KEY not set. Get one at https://fal.ai/dashboard/keys")
@@ -61,6 +63,7 @@ def _poll_fal(model_path: str, payload: dict[str, Any], *, base: str, poll_s: in
     submit.raise_for_status()
     q = submit.json()
     status_url, response_url = q["status_url"], q["response_url"]
+    request_id = q.get("request_id")
 
     deadline = time.time() + timeout_s
     while True:
@@ -77,7 +80,7 @@ def _poll_fal(model_path: str, payload: dict[str, Any], *, base: str, poll_s: in
 
     res = requests.get(response_url, headers=headers, timeout=30)
     res.raise_for_status()
-    return res.json()
+    return res.json(), request_id
 
 
 def _download(url: str, output_path: Path) -> None:
@@ -89,7 +92,15 @@ def _download(url: str, output_path: Path) -> None:
 
 # --------------------------------------------------------------------------- Kling (default)
 
-KLING_RATE_USD_PER_5S = {"master": 0.30, "pro": 0.20, "standard": 0.10}
+# fal Kling 2.1 image-to-video pricing = base price for the first 5s + a per-additional-second rate.
+# Verified from fal.ai/models/fal-ai/kling-video/v2.1/<tier>/image-to-video (2026-06):
+#   standard: $0.28 / 5s + $0.056/s   |   pro: $0.49 / 5s + $0.098/s
+# Master is unverified (not used by routing); update before enabling it.
+KLING_PRICING = {            # tier -> (base_first_5s_usd, per_additional_second_usd)
+    "standard": (0.28, 0.056),
+    "pro": (0.49, 0.098),
+    "master": (0.98, 0.196),  # ESTIMATE — verify against fal before routing to master
+}
 
 # fal's Kling image-to-video accepts only these discrete values; anything else -> 422.
 _KLING_DURATIONS = ("5", "10")
@@ -113,13 +124,21 @@ def _kling_aspect(aspect_ratio: str) -> str:
     return min(_KLING_ASPECTS, key=lambda k: abs(_KLING_ASPECTS[k] - target))
 
 
+def _kling_tier(model_variant: str) -> str:
+    v = (model_variant or "").lower()
+    if "master" in v:
+        return "master"
+    if "standard" in v:
+        return "standard"
+    return "pro"
+
+
 def kling_cost(model_variant: str, duration_s: int) -> float:
-    tier = "standard"
-    if "master" in model_variant:
-        tier = "master"
-    elif "pro" in model_variant:
-        tier = "pro"
-    return round(KLING_RATE_USD_PER_5S[tier] * (duration_s / 5), 4)
+    """Real fal cost = base (first 5s) + per-second after, priced on the BILLED duration (we clamp
+    every call to 5 or 10s), so the estimate matches what fal actually charges."""
+    base, per_sec = KLING_PRICING[_kling_tier(model_variant)]
+    billed_s = int(_kling_duration(duration_s))   # 5 or 10 — matches the clamp applied to the call
+    return round(base + per_sec * (billed_s - 5), 4)
 
 
 def generate_kling(
@@ -127,7 +146,7 @@ def generate_kling(
     prompt: str,
     image_url: str,
     output_path: str,
-    model_variant: str = "v2.1/pro",   # "Kling 3.0 Pro" tier; pin the SKU default here
+    model_variant: str = "v2.1/standard",   # volume default tier; pin the SKU default here
     duration: str = "10",
     aspect_ratio: str = "4:3",
     execute: bool = False,
@@ -146,13 +165,13 @@ def generate_kling(
     payload = {"prompt": prompt, "duration": _kling_duration(duration),
                "aspect_ratio": _kling_aspect(aspect_ratio), "image_url": image_url}
     try:
-        data = _poll_fal(model_path, payload, base="https://queue.fal.run/fal-ai")
+        data, request_id = _poll_fal(model_path, payload, base="https://queue.fal.run/fal-ai")
         _download(data["video"]["url"], Path(output_path))
     except (requests.RequestException, GenerationError, KeyError) as e:
         return GenResult(success=False, provider="kling", model=f"fal-ai/{model_path}",
                          error=f"Kling generation failed: {e}")
     return GenResult(success=True, provider="kling", model=f"fal-ai/{model_path}",
-                     output_path=output_path, cost_usd=est,
+                     output_path=output_path, cost_usd=est, request_id=request_id,
                      duration_seconds=round(time.time() - start, 2), raw=data)
 
 
@@ -206,11 +225,12 @@ def generate_seedance(
     elif image_url:
         payload["image_url"] = image_url
     try:
-        data = _poll_fal(model_path, payload, base="https://queue.fal.run")
+        data, request_id = _poll_fal(model_path, payload, base="https://queue.fal.run")
         _download(data["video"]["url"], Path(output_path))
     except (requests.RequestException, GenerationError, KeyError) as e:
         return GenResult(success=False, provider="seedance", model=model_path,
                          error=f"Seedance generation failed: {e}")
     return GenResult(success=True, provider="seedance", model=model_path, output_path=output_path,
-                     cost_usd=est, duration_seconds=round(time.time() - start, 2),
+                     cost_usd=est, request_id=request_id,
+                     duration_seconds=round(time.time() - start, 2),
                      seed=data.get("seed"), raw=data)

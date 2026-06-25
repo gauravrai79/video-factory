@@ -39,25 +39,38 @@ _GUARD = (
 )
 
 
-_DEFAULT_VARIANT = {"kling": "v2.1/pro", "seedance": "standard"}
+_KLING_TIER_VARIANT = {"standard": "v2.1/standard", "pro": "v2.1/pro", "master": "v2.1/master"}
+
+
+def kling_default_variant() -> str:
+    """The Kling tier used for the volume default. Standard is the cost-smart choice for catalog
+    SKUs (~43% cheaper than Pro at 20K/mo); set VF_KLING_TIER=pro|master to upgrade globally.
+    Hero / difficult-print SKUs escalate to Seedance regardless (see route())."""
+    tier = os.environ.get("VF_KLING_TIER", "standard").lower()
+    return _KLING_TIER_VARIANT.get(tier, "v2.1/standard")
 
 
 def route(row: SkuRow) -> tuple[str, str, str]:
-    """Pick model + variant. Kling default; Seedance for hero SKUs / difficult prints / multi-angle."""
+    """Pick model + variant. Kling Standard is the volume default; Seedance for hero SKUs /
+    difficult prints / multi-angle where garment fidelity justifies the higher cost."""
     if row.hero or row.is_difficult_print or len(row.image_urls) > 1:
         why = ("hero SKU" if row.hero else
                "difficult print" if row.is_difficult_print else
                "multiple seller angles available")
         return "seedance", "standard", f"Seedance 2.0 ({why}) for garment fidelity"
-    return "kling", "v2.1/pro", "Kling 3.0 Pro default (strong multi-angle subject consistency, lowest tier cost)"
+    variant = kling_default_variant()
+    tier = variant.split("/")[-1]
+    return "kling", variant, f"Kling 2.1 {tier} (volume default; escalate to Seedance for hero/difficult prints)"
 
 
 def resolve_route(row: SkuRow, force_model: str | None = None) -> tuple[str, str, str]:
     """Routing with an optional manual override (ops can pin a model, e.g. to cap cost)."""
     if force_model:
-        if force_model not in _DEFAULT_VARIANT:
-            raise ValueError(f"force_model must be one of {list(_DEFAULT_VARIANT)}, got {force_model!r}")
-        return force_model, _DEFAULT_VARIANT[force_model], f"manual override -> {force_model}"
+        if force_model == "kling":
+            return "kling", kling_default_variant(), "manual override -> kling"
+        if force_model == "seedance":
+            return "seedance", "standard", "manual override -> seedance"
+        raise ValueError(f"force_model must be 'kling' or 'seedance', got {force_model!r}")
     return route(row)
 
 
@@ -149,7 +162,7 @@ def fallback_plan(plan: PromptPlan, row: SkuRow, spec: OutputSpec) -> PromptPlan
                          "Seedance 2.0 fallback after Kling failure (reference fidelity)",
                          row, spec, plan.prompt, plan.llm_refined)
     if plan.model == "seedance":
-        return _plan_for("kling", "v2.1/pro",
-                         "Kling 3.0 Pro fallback after Seedance failure",
+        return _plan_for("kling", kling_default_variant(),
+                         "Kling fallback after Seedance failure",
                          row, spec, plan.prompt, plan.llm_refined)
     return None

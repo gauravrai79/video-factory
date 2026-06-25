@@ -37,7 +37,7 @@ def monthly_projection(
     *,
     volume: int = 20_000,
     model: str = "kling",
-    model_variant: str = "v2.1/pro",
+    model_variant: str = "v2.1/standard",
     duration_s: int = 12,
     regen_factor: float = 1.35,
     infra_per_video_usd: float = 0.12,
