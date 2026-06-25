@@ -39,6 +39,9 @@ _GUARD = (
 )
 
 
+_DEFAULT_VARIANT = {"kling": "v2.1/pro", "seedance": "standard"}
+
+
 def route(row: SkuRow) -> tuple[str, str, str]:
     """Pick model + variant. Kling default; Seedance for hero SKUs / difficult prints / multi-angle."""
     if row.hero or row.is_difficult_print or len(row.image_urls) > 1:
@@ -47,6 +50,15 @@ def route(row: SkuRow) -> tuple[str, str, str]:
                "multiple seller angles available")
         return "seedance", "standard", f"Seedance 2.0 ({why}) for garment fidelity"
     return "kling", "v2.1/pro", "Kling 3.0 Pro default (strong multi-angle subject consistency, lowest tier cost)"
+
+
+def resolve_route(row: SkuRow, force_model: str | None = None) -> tuple[str, str, str]:
+    """Routing with an optional manual override (ops can pin a model, e.g. to cap cost)."""
+    if force_model:
+        if force_model not in _DEFAULT_VARIANT:
+            raise ValueError(f"force_model must be one of {list(_DEFAULT_VARIANT)}, got {force_model!r}")
+        return force_model, _DEFAULT_VARIANT[force_model], f"manual override -> {force_model}"
+    return route(row)
 
 
 def _deterministic_prompt(row: SkuRow) -> str:
@@ -121,8 +133,8 @@ def _plan_for(model: str, variant: str, reason: str, row: SkuRow, spec: OutputSp
     )
 
 
-def build_prompt(row: SkuRow, spec: OutputSpec) -> PromptPlan:
-    model, variant, reason = route(row)
+def build_prompt(row: SkuRow, spec: OutputSpec, force_model: str | None = None) -> PromptPlan:
+    model, variant, reason = resolve_route(row, force_model)
     base = _deterministic_prompt(row)
     prompt, refined = _llm_refine(base, row)
     return _plan_for(model, variant, reason, row, spec, prompt, refined)

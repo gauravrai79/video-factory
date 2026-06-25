@@ -91,6 +91,27 @@ def _download(url: str, output_path: Path) -> None:
 
 KLING_RATE_USD_PER_5S = {"master": 0.30, "pro": 0.20, "standard": 0.10}
 
+# fal's Kling image-to-video accepts only these discrete values; anything else -> 422.
+_KLING_DURATIONS = ("5", "10")
+_KLING_ASPECTS = {"16:9": 16 / 9, "1:1": 1.0, "9:16": 9 / 16}
+
+
+def _kling_duration(duration: str | int) -> str:
+    """Snap the requested duration to Kling's allowed set (5 or 10s). Finishing clamps into the
+    spec band afterward; 10s covers the 10-12s SOW window."""
+    return "10" if int(duration) >= 8 else "5"
+
+
+def _kling_aspect(aspect_ratio: str) -> str:
+    """Map an arbitrary W:H (e.g. the spec's 4:3) to the nearest aspect Kling supports. Finishing
+    scales + pads to the exact spec dimensions, so the generator only needs a valid frame."""
+    try:
+        w, h = (float(x) for x in aspect_ratio.split(":"))
+        target = w / h
+    except (ValueError, ZeroDivisionError):
+        return "1:1"
+    return min(_KLING_ASPECTS, key=lambda k: abs(_KLING_ASPECTS[k] - target))
+
 
 def kling_cost(model_variant: str, duration_s: int) -> float:
     tier = "standard"
@@ -122,8 +143,8 @@ def generate_kling(
                          cost_usd=est, raw={"dry_run": True, "image_url": image_url})
 
     start = time.time()
-    payload = {"prompt": prompt, "duration": duration, "aspect_ratio": aspect_ratio,
-               "image_url": image_url}
+    payload = {"prompt": prompt, "duration": _kling_duration(duration),
+               "aspect_ratio": _kling_aspect(aspect_ratio), "image_url": image_url}
     try:
         data = _poll_fal(model_path, payload, base="https://queue.fal.run/fal-ai")
         _download(data["video"]["url"], Path(output_path))

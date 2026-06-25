@@ -17,6 +17,10 @@ failed tasks don't consume credits.
 - Natural human proportions and motion (avoid the "inhuman motion" QC fail).
 
 ## Parameters
-- `operation=image_to_video`, `model_variant=v2.1/pro`, `duration` ≈ spec max (finishing clamps down),
-  `aspect_ratio` from the spec (4:3 for 960×720).
+- `operation=image_to_video`, `model_variant=v2.1/pro`.
+- `duration` — fal's Kling accepts ONLY `"5"` or `"10"` (string seconds). Any other value (e.g. `"12"`)
+  → HTTP 422. `fal_video._kling_duration()` snaps to the allowed set; finishing clamps into the spec band.
+- `aspect_ratio` — fal's Kling accepts ONLY `16:9 / 9:16 / 1:1`. The spec's `4:3` is NOT valid →
+  `fal_video._kling_aspect()` maps to the nearest supported ratio; finishing scales + pads to the exact
+  spec dimensions, so the generator only needs a valid frame.
 - **Audio off** — music added in finishing.

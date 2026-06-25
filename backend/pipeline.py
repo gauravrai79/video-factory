@@ -18,7 +18,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .agents.prompt_builder import build_prompt, fallback_plan, route, PromptPlan
+from .agents.prompt_builder import build_prompt, fallback_plan, resolve_route, PromptPlan
 from .capabilities import fal_video
 from .capabilities.cost import estimate_generation
 from .finishing import Callout, finish
@@ -66,6 +66,7 @@ def create_job(
     stand_in_clip: str | None = None,
     dedupe: bool = True,
     sla_seconds: float | None = None,
+    force_model: str | None = None,
 ) -> tuple[Job, bool]:
     """Create (but do not run) a job. Returns (job, created): created=False means an existing
     non-failed job was reused (idempotency). Pricing + routing are computed cheaply here (no LLM,
@@ -79,7 +80,7 @@ def create_job(
             return existing, False
 
     # Cheap route + price (deterministic — no LLM, no network).
-    model, variant, reason = route(row)
+    model, variant, reason = resolve_route(row, force_model)
     est = estimate_generation(model, variant, int(round(spec.max_duration_s)))
     if sla_seconds is None:
         from .sla import sla_seconds as _sla_for_tier
@@ -94,6 +95,7 @@ def create_job(
         "stand_in_clip": stand_in_clip,
         "priority": job_priority(row),
         "route": {"model": model, "variant": variant, "reason": reason},
+        "force_model": force_model,
         "est_cost_usd": est,
         "sla_seconds": sla_seconds,
     }
@@ -121,14 +123,18 @@ def _generate_once(plan: PromptPlan, row: SkuRow, out_clip: str, execute: bool):
 
 def _generate_resilient(store: JobStore, job: Job, plan: PromptPlan, row: SkuRow,
                         spec: OutputSpec, out_clip: str, execute: bool,
-                        *, attempts_per_model: int = 2):
+                        *, attempts_per_model: int = 2, allow_fallback: bool = True):
     """Try the primary model with retries, then fall back to the alternate model (Kling<->Seedance),
     per AOP `generate.on_failure: fallback_model`. Returns the first successful GenResult, or the last
-    failure. Each attempt is an audit event so the reshoot/fallback rate is measurable."""
+    failure. Each attempt is an audit event so the reshoot/fallback rate is measurable.
+
+    allow_fallback=False (used when a model is force-pinned to cap cost) keeps retries on the pinned
+    model only — so a cheap Kling run can't silently fall back to a pricier Seedance call."""
     plans = [plan]
-    fb = fallback_plan(plan, row, spec)
-    if fb is not None:
-        plans.append(fb)
+    if allow_fallback:
+        fb = fallback_plan(plan, row, spec)
+        if fb is not None:
+            plans.append(fb)
 
     last = None
     for attempt_plan in plans:
@@ -166,7 +172,7 @@ def execute_job(
     stand_in_clip = p.get("stand_in_clip")
 
     # 1) Build prompt + route (read step). Full build (may LLM-refine if VF_USE_LLM=1).
-    plan = build_prompt(row, spec)
+    plan = build_prompt(row, spec, force_model=p.get("force_model"))
     store.append_event(job, "prompt_built",
                        {"model": plan.model, "variant": plan.model_variant,
                         "route": plan.route_reason, "llm_refined": plan.llm_refined})
@@ -188,7 +194,8 @@ def execute_job(
 
     # 2) Generate (write step — governed by the approval gate in Spine; auto-approved under ceiling).
     store.transition(job, State.GENERATING, {"model": plan.model})
-    gen, used_plan = _generate_resilient(store, job, plan, row, spec, out_clip, execute)
+    gen, used_plan = _generate_resilient(store, job, plan, row, spec, out_clip, execute,
+                                         allow_fallback=p.get("force_model") is None)
     if not gen.success:
         store.transition(job, State.FAILED, {"error": gen.error})
         return job
@@ -255,11 +262,12 @@ def run_job(
     out_dir: str = "out",
     stand_in_clip: str | None = None,
     deliver: bool = True,
+    force_model: str | None = None,
 ) -> Job:
     """Phase 1 entry: create + execute one SKU inline. Kept for scripts/run_one.py."""
     job, _ = create_job(store, row, tenant_id=tenant_id, project=project, spec=spec,
                         execute=execute, music_path=music_path, out_dir=out_dir,
-                        stand_in_clip=stand_in_clip, dedupe=False)
+                        stand_in_clip=stand_in_clip, dedupe=False, force_model=force_model)
     return execute_job(store, job, deliver=deliver)
 
 

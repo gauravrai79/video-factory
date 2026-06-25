@@ -38,6 +38,8 @@ def main() -> int:
     ap.add_argument("--finish-stand-in", help="Local clip to finish in a dry run (proves finishing).")
     ap.add_argument("--music", help="Background music to mux in finishing.")
     ap.add_argument("--spec", help="Override VF_SPEC_PRESET (sow_written | sample).")
+    ap.add_argument("--model", choices=["kling", "seedance"],
+                    help="Pin the generation model (overrides auto-routing; disables fallback).")
     args = ap.parse_args()
 
     spec = get_spec(args.spec)
@@ -51,7 +53,7 @@ def main() -> int:
     row = rows[args.row]
 
     # Announce the decision BEFORE any paid call (governance contract).
-    plan = build_prompt(row, spec)
+    plan = build_prompt(row, spec, force_model=args.model)
     print("=" * 72)
     print(f"SKU {row.fsn} - {row.title or row.category}")
     print(f"Spec preset : {spec.name}  ({spec.width}x{spec.height}, "
@@ -77,7 +79,7 @@ def main() -> int:
     job = run_job(store, row, tenant_id=os.environ.get("VF_TENANT_ID", "flipkart"),
                   project=os.environ.get("VF_PROJECT", "video-factory"), spec=spec,
                   execute=args.execute, music_path=args.music,
-                  stand_in_clip=args.finish_stand_in)
+                  stand_in_clip=args.finish_stand_in, force_model=args.model)
 
     print(json.dumps(summarize(job, store), indent=2))
     return 0 if job.state.value not in ("failed",) else 2
