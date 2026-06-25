@@ -70,6 +70,18 @@ PRESETS: dict[str, OutputSpec] = {
         min_size_mb=12.0,
         max_size_mb=17.0,
     ),
+    # Portrait 9:16 — matches the generators' native vertical output, so apparel FILLS the frame with
+    # no letterboxing (the landscape 960x720 spec pillarboxes portrait product photos). Best for
+    # mobile PDP / social. SOW duration band; sized for 1080x1920.
+    "portrait": OutputSpec(
+        name="portrait",
+        width=1080,
+        height=1920,
+        min_duration_s=10.0,
+        max_duration_s=12.0,
+        min_size_mb=8.0,
+        max_size_mb=14.0,
+    ),
 }
 
 

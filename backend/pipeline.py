@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .agents.prompt_builder import build_prompt, fallback_plan, resolve_route, PromptPlan
+from .agents.qc_flagger import run_vlm_qc, vlm_qc_enabled
 from .capabilities import fal_video
 from .capabilities.cost import estimate_generation
 from .finishing import Callout, finish
@@ -223,18 +224,33 @@ def execute_job(
         store.transition(job, State.FAILED, detail={"error": fr.error},
                          result_update={"error": fr.error, "failed_stage": "finishing"})
         return job
-    store.transition(job, State.QC, result_update={"finished": fr.probe,
-                                                    "finished_path": fr.output_path})
 
-    # 4) QC auto-check (write step). Flagged -> human review. Clean -> auto-approve, UNLESS the job
-    #    opted into the human QC gate (Posture A), in which case it waits at QC for a reviewer.
+    # 3b) VLM visual QC (advisory) — catches defects the spec check can't (artifacts, distortion,
+    #     anatomy). Only on real generations; a dry-run stand-in isn't worth a paid vision call.
+    vlm = run_vlm_qc(fr.output_path, spec) if (execute and vlm_qc_enabled()) else None
+    if vlm is not None:
+        store.append_event(job, "vlm_qc",
+                           {"ran": vlm.ran, "passed": vlm.passed, "issues": len(vlm.issues),
+                            "model": vlm.model, "request_id": vlm.request_id, "error": vlm.error})
+    vlm_flagged = bool(vlm and vlm.ran and not vlm.passed)
+
+    qc_update: dict[str, Any] = {"finished": fr.probe, "finished_path": fr.output_path}
+    if vlm is not None:
+        qc_update["vlm_qc"] = vlm.as_dict()
+    store.transition(job, State.QC, result_update=qc_update)
+
+    # 4) QC decision. Deterministic fail -> REWORK. Else: a VLM flag (or an opted-in human gate)
+    #    holds the job at QC for a reviewer; otherwise it auto-approves.
     if not fr.compliant:
         store.transition(job, State.REWORK, {"violations": fr.violations})
         return job
-    if p.get("human_qc"):
-        store.append_event(job, "awaiting_human_qc", {"auto_checks": "passed"})
+    if vlm_flagged or p.get("human_qc"):
+        store.append_event(job, "awaiting_human_qc",
+                           {"reason": "vlm_flagged" if vlm_flagged else "human_qc",
+                            "issues": (vlm.issues if vlm else [])})
         return job  # stays at QC; a reviewer calls qc_decision()
-    store.transition(job, State.APPROVED, {"auto_checks": "passed"})
+    store.transition(job, State.APPROVED,
+                     {"auto_checks": "passed", "vlm_qc": "passed" if (vlm and vlm.ran) else "skipped"})
 
     # 5) Deliver (write step — auto-proceeds once QC approved; the gate is QC).
     if deliver:

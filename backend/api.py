@@ -71,6 +71,7 @@ def _job_view(store: JobStore, job, *, full: bool = False) -> dict[str, Any]:
         "fell_back": (job.result.get("generation") or {}).get("fell_back"),
         "finished": job.result.get("finished"),
         "violations": job.result.get("violations"),
+        "vlm_qc": job.result.get("vlm_qc"),
         "held": job.result.get("held"),
         "error": job.result.get("error"),
         "failed_stage": job.result.get("failed_stage"),

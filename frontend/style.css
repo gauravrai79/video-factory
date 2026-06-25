@@ -148,6 +148,13 @@ tr:hover td { background: #131a24; }
 .btn-approve { background: var(--green); }
 .btn-reject { background: var(--red); }
 .viol { background: #2a1718; border: 1px solid #5a2a2a; color: #ffb4ab; border-radius: 8px; padding: 8px 11px; font-size: 12px; margin: 4px 0; }
+.vlm { border-radius: 8px; padding: 10px 12px; font-size: 13px; margin: 10px 0; }
+.vlm.pass { background: #16331f; border: 1px solid #1f6f33; color: #7ee787; }
+.vlm.fail { background: #2c2410; border: 1px solid #5a4a1a; color: #e3b341; }
+.vlm.skip { background: #1c2230; border: 1px solid #2b3242; color: #8b96a5; }
+.vlm-sum { margin: 6px 0; color: var(--text); }
+.vlm-issue { font-size: 12px; margin: 4px 0; padding: 5px 9px; border-radius: 6px; background: rgba(0,0,0,.25); }
+.vlm-issue.major { color: #ffb4ab; } .vlm-issue.minor { color: #e3b341; }
 .held { background: #2c2410; border: 1px solid #5a4a1a; color: #e3b341; border-radius: 8px; padding: 8px 11px; font-size: 12px; }
 
 /* audit timeline */

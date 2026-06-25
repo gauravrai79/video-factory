@@ -132,13 +132,14 @@ async function openJob(jobId) {
     </div>` : "";
   const errBanner = v.error ? `<div class="err-banner"><b>Failed${v.failed_stage ? ` at ${esc(v.failed_stage)}` : ""}:</b> ${esc(v.error)}${!v.has_image ? "<br>↳ This SKU has no <b>image_url</b> — add a direct product image URL and re-ingest." : ""}</div>` : "";
   const viol = (v.violations || []).map((x) => `<div class="viol">⚠ ${esc(x)}</div>`).join("");
+  const vlmBlock = vlmHtml(v.vlm_qc);
   const held = v.held ? `<div class="held">⏸ held: ${esc(v.held)} — ${esc((v.result && v.result.note) || "")}</div>` : "";
 
   $("#drawer-body").innerHTML = `
     <h2>${esc(v.title || v.fsn)}</h2>
     <div class="fsn">${esc(v.fsn)} · <span class="badge s-${v.state}">${v.state}</span></div>
     ${hasVideo ? `<video controls preload="metadata" src="${vsrc}"></video>` : ""}
-    ${errBanner}${held}${viol}
+    ${errBanner}${held}${viol}${vlmBlock}
     ${qcBlock}
     <div class="kv">
       <div class="k">Model</div><div class="v">${esc(v.model)}${v.force_model ? " (pinned)" : ""}${v.fell_back ? " · fell back" : ""}</div>
@@ -152,6 +153,17 @@ async function openJob(jobId) {
     <div class="section-title">Audit trail <span class="${v.audit_chain_valid ? "chainok" : "chainbad"}">${v.audit_chain_valid ? "⛓ chain valid" : "⛓ CHAIN INVALID"}</span></div>
     <div class="timeline">${(v.audit || []).map(evHtml).join("")}</div>`;
   $("#backdrop").hidden = false; $("#drawer").hidden = false;
+}
+
+function vlmHtml(q) {
+  if (!q) return "";
+  if (!q.ran) return `<div class="vlm skip">🔍 VLM QC skipped${q.error ? ` — ${esc(q.error)}` : ""}</div>`;
+  const issues = (q.issues || []).map((i) =>
+    `<div class="vlm-issue ${esc(i.severity || "")}">${esc((i.severity || "").toUpperCase())} · ${esc(i.type || "")}: ${esc(i.detail || "")}</div>`).join("");
+  const cls = q.passed ? "pass" : "fail";
+  const head = q.passed ? "✓ VLM QC passed" : "⚠ VLM QC flagged — needs human review";
+  return `<div class="vlm ${cls}"><b>${head}</b> <small>(${esc(q.model || "")})</small>
+    ${q.summary ? `<div class="vlm-sum">${esc(q.summary)}</div>` : ""}${issues}</div>`;
 }
 
 function evHtml(e) {
