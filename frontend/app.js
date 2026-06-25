@@ -31,6 +31,13 @@ async function refreshSummary() {
                       : `<span class="chip warn">fal.ai key missing (dry-run only)</span>`,
   ].join("");
 
+  // populate the spec dropdown once (default option marked with the active preset)
+  const specSel = $("#spec");
+  if (specSel && specSel.options.length <= 1 && s.specs) {
+    specSel.innerHTML = `<option value="">default (${esc(s.spec)})</option>` +
+      s.specs.map((sp) => `<option value="${esc(sp.name)}">${esc(sp.label)}</option>`).join("");
+  }
+
   const d = s.drain || {};
   const draining = d.running;
   const pct = d.total ? Math.round((d.done / d.total) * 100) : 0;
@@ -200,6 +207,7 @@ $("#ingest-form").addEventListener("submit", async (e) => {
   fd.append("execute", $("#execute").checked);
   fd.append("human_qc", $("#human_qc").checked);
   fd.append("model", $("#model").value);
+  fd.append("spec", $("#spec").value);
   fd.append("stand_in", $("#standin").value.trim());
   fd.append("auto_run", "true");
   btn.disabled = true; msg.className = "hint"; msg.textContent = "Ingesting…";

@@ -27,7 +27,7 @@ from . import runner, sla as sla_mod
 from .ingest import parse_row
 from .jobstore import JobStore, State
 from .pipeline import create_job, cost_ceiling_usd, qc_decision
-from .spec import get_spec
+from .spec import PRESETS, get_spec
 
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
@@ -107,6 +107,8 @@ def summary() -> dict[str, Any]:
         "project": _project(),
         "queue_backend": os.environ.get("VF_QUEUE_BACKEND", "sync"),
         "spec": get_spec().name,
+        "specs": [{"name": p.name, "label": f"{p.name} · {p.width}×{p.height} · "
+                   f"{int(p.min_duration_s)}-{int(p.max_duration_s)}s"} for p in PRESETS.values()],
         "fal_key_present": bool(os.environ.get("FAL_KEY") or os.environ.get("FAL_AI_API_KEY")),
         "cost_ceiling_usd": cost_ceiling_usd(),
         "total_jobs": len(jobs),
@@ -142,11 +144,16 @@ async def ingest(
     model: str | None = Form(default=None),
     human_qc: bool = Form(default=False),
     stand_in: str | None = Form(default=None),
+    spec: str | None = Form(default=None),
     auto_run: bool = Form(default=True),
 ) -> dict[str, Any]:
     """Upload a CSV manifest -> create + (optionally) start running jobs. Mirrors AOP ingest_batch."""
     if file is None:
         raise HTTPException(400, "CSV file required")
+    try:
+        out_spec = get_spec(spec or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     raw = (await file.read()).decode("utf-8-sig")
     rows = [parse_row(r) for r in csv.DictReader(io.StringIO(raw))]
     rows = [r for r in rows if r.fsn]
@@ -166,11 +173,10 @@ async def ingest(
                         "link in the 'fsn' column. FSN should be the SKU id; the image goes in 'image_url'.")
 
     store = JobStore()
-    spec = get_spec()
     created, reused = [], []
     for row in rows:
         job, is_new = create_job(
-            store, row, tenant_id=_tenant(), project=_project(), spec=spec,
+            store, row, tenant_id=_tenant(), project=_project(), spec=out_spec,
             execute=execute, force_model=(model or None), human_qc=human_qc,
             stand_in_clip=(stand_in or None), dedupe=True,
         )
