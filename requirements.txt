@@ -16,9 +16,12 @@ google-adk>=1.30           # Prompt-Builder / QC-flagger / Rework agents
 # redis>=5.0
 # rq>=1.16                 # queue worker (RQ workers fork -> Linux/macOS)
 
-# --- Phase 2+ (API + Postgres + delivery; not required to run the batch locally) ---
-# fastapi>=0.110
-# uvicorn[standard]>=0.29
+# --- Phase 3 (ops + QC web UI / API) ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9    # CSV upload (multipart form)
+
+# --- Phase 2+ (Postgres + delivery; not required to run the batch/UI locally) ---
 # sqlalchemy>=2.0
 # psycopg[binary]>=3.1     # Postgres driver (Railway)
 # google-api-python-client # Google Drive delivery

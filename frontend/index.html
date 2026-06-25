@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Video Factory — Ops Console</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▶</span>
+      <div>
+        <h1>Video Factory</h1>
+        <p class="sub">image-to-video batch factory · ops + QC console</p>
+      </div>
+    </div>
+    <div class="env" id="env-chips"><!-- chips injected --></div>
+  </header>
+
+  <section class="stats" id="stats"><!-- stat cards injected --></section>
+
+  <main>
+    <section class="panel ingest">
+      <h2>Ingest a batch</h2>
+      <form id="ingest-form">
+        <label class="file">
+          <input type="file" id="csv" accept=".csv" required />
+          <span id="csv-label">Choose a SKU manifest CSV…</span>
+        </label>
+        <div class="opts">
+          <label class="opt"><input type="checkbox" id="execute" />
+            <span>Execute <small>(real paid fal.ai calls)</small></span></label>
+          <label class="opt"><input type="checkbox" id="human_qc" />
+            <span>Human QC gate <small>(hold clean jobs for review)</small></span></label>
+          <label class="opt sel"><span>Model</span>
+            <select id="model">
+              <option value="">auto-route</option>
+              <option value="kling">kling (cheap)</option>
+              <option value="seedance">seedance (fidelity)</option>
+            </select></label>
+        </div>
+        <label class="standin">Stand-in clip <small>(optional — finish a local clip in dry-run, no paid call)</small>
+          <input type="text" id="standin" placeholder="e.g. out/finished/TSHHGYAGKXZDA2YF.mp4" /></label>
+        <button type="submit" id="ingest-btn">Ingest &amp; run</button>
+        <p class="hint" id="ingest-msg"></p>
+      </form>
+    </section>
+
+    <section class="panel jobs">
+      <div class="jobs-head">
+        <h2>Jobs</h2>
+        <div class="filters" id="filters"></div>
+        <button class="ghost" id="run-btn" title="Process any pending jobs">Run pending</button>
+      </div>
+      <div class="table-wrap">
+        <table id="jobs-table">
+          <thead><tr>
+            <th>FSN</th><th>Product</th><th>Tier</th><th>Model</th><th>State</th>
+            <th>Cost</th><th>SLA</th><th>Output</th><th></th>
+          </tr></thead>
+          <tbody id="jobs-body"></tbody>
+        </table>
+        <p class="empty" id="empty">No jobs yet — ingest a CSV to begin.</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="drawer-backdrop" id="backdrop" hidden></div>
+  <aside class="drawer" id="drawer" hidden>
+    <button class="close" id="drawer-close">✕</button>
+    <div id="drawer-body"></div>
+  </aside>
+
+  <script src="/app.js"></script>
+</body>
+</html>

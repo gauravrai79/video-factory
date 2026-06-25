@@ -67,6 +67,7 @@ def create_job(
     dedupe: bool = True,
     sla_seconds: float | None = None,
     force_model: str | None = None,
+    human_qc: bool = False,
 ) -> tuple[Job, bool]:
     """Create (but do not run) a job. Returns (job, created): created=False means an existing
     non-failed job was reused (idempotency). Pricing + routing are computed cheaply here (no LLM,
@@ -96,6 +97,7 @@ def create_job(
         "priority": job_priority(row),
         "route": {"model": model, "variant": variant, "reason": reason},
         "force_model": force_model,
+        "human_qc": human_qc,
         "est_cost_usd": est,
         "sla_seconds": sla_seconds,
     }
@@ -221,17 +223,35 @@ def execute_job(
     store.transition(job, State.QC, result_update={"finished": fr.probe,
                                                     "finished_path": fr.output_path})
 
-    # 4) QC auto-check (write step — clean auto-approves; flagged would route to human review).
-    if fr.compliant:
-        store.transition(job, State.APPROVED, {"auto_checks": "passed"})
-    else:
+    # 4) QC auto-check (write step). Flagged -> human review. Clean -> auto-approve, UNLESS the job
+    #    opted into the human QC gate (Posture A), in which case it waits at QC for a reviewer.
+    if not fr.compliant:
         store.transition(job, State.REWORK, {"violations": fr.violations})
         return job
+    if p.get("human_qc"):
+        store.append_event(job, "awaiting_human_qc", {"auto_checks": "passed"})
+        return job  # stays at QC; a reviewer calls qc_decision()
+    store.transition(job, State.APPROVED, {"auto_checks": "passed"})
 
     # 5) Deliver (write step — auto-proceeds once QC approved; the gate is QC).
     if deliver:
         _deliver(store, job, out_dir)
     return job
+
+
+def qc_decision(store: JobStore, job: Job, *, approve: bool, reason: str = "",
+                deliver: bool = True) -> Job:
+    """Human QC gate: a reviewer clears or rejects a job sitting at QC. Approve -> APPROVED ->
+    delivered; reject -> REWORK with a reason. Mirrors Spine's approval gate."""
+    if job.state != State.QC:
+        raise ValueError(f"job {job.fsn} is not awaiting QC (state={job.state.value})")
+    if approve:
+        store.transition(job, State.APPROVED, {"qc": "human_approved"})
+        if deliver:
+            _deliver(store, job, job.payload.get("out_dir", "out"))
+    else:
+        store.transition(job, State.REWORK, {"qc": "human_rejected", "reason": reason or "rejected"})
+    return store.get(job.job_id) or job
 
 
 def _deliver(store: JobStore, job: Job, out_dir: str) -> None:

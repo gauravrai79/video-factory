@@ -80,6 +80,10 @@ class JobStore:
         self.db_path = db_path or _db_path()
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
+        # WAL + busy_timeout let the API server read while a background worker thread writes
+        # (the UI polls job state while jobs are mid-flight). Harmless on the single-process CLI.
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self._init()
 
     def _init(self) -> None:
