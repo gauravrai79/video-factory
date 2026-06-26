@@ -52,13 +52,18 @@ Spine (control/governance plane — reused in prod)
         │  governs decisions + writes
         ▼
 Video Factory project (this repo)
-   ├─ backend/         FastAPI + Postgres: job state machine + queue (Redis/RQ)
-   │     pending → generating → finishing → qc → approved/rework → delivered
-   │     SLA timers · idempotency · priority queue · model fallback   (deterministic spine)
-   ├─ agents/          ADK (Spine standard, Gemini): Prompt-Builder · QC-flagger · Rework
-   ├─ capabilities/    harvested from OpenMontage: fal.ai Kling/Seedance clients · cost model
-   ├─ finishing.py     deterministic FFmpeg: dims · 2-pass size · clamp · watermark · music · supers
-   └─ frontend/        ops console: CSV upload · batch dashboard · QC review screen
+   ├─ backend/
+   │   ├─ api.py          FastAPI: ops + QC console API (ingest · jobs · qc · media · summary)
+   │   ├─ pipeline.py     per-job state machine + retries + model fallback
+   │   │                  pending → generating → finishing → qc → approved/rework → delivered
+   │   ├─ jobqueue/       pluggable queue: in-process `sync` (default) | Redis/RQ (prod, opt-in)
+   │   ├─ jobstore.py     SQLite today (Postgres-shaped) · hash-chained audit · idempotency
+   │   ├─ sla.py          tier-based SLA timers · breach detection from the audit log
+   │   ├─ finishing.py    deterministic FFmpeg: dims · 2-pass size · clamp · watermark · supers · music
+   │   ├─ capabilities/   harvested from OpenMontage: fal.ai Kling/Seedance clients · cost model
+   │   └─ agents/         Prompt-Builder (deterministic; optional Gemini/ADK refine) ·
+   │                      QC-flagger (VLM visual QC via fal vision)      [Rework agent: planned]
+   └─ frontend/           zero-build ops console: CSV ingest · spec picker · dashboard · QC gate · player
 ```
 
 ### Generation layer — aggregator, not direct vendor
@@ -73,10 +78,11 @@ you A/B models per SKU category.
   fidelity (~$3.03 per 10s clip). Routed automatically; reserve the spend for SKUs that need it.
 
 ### Finishing layer — deterministic, 100% automatable
-Everything the SOW mandates that isn't generative: enforce dimensions, two-pass encode to the 6–10 MB
-band, clamp duration, burn the "Synthetically Generated" watermark, overlay callout supers, mux
-non-copyrighted music, enforce the end-frame rule. **Generation runs audio-off; music is added here**
-— cheaper and more controllable.
+Everything the SOW mandates that isn't generative: enforce dimensions, two-pass encode into the
+selected spec's size band, clamp duration, burn the "Synthetically Generated" watermark, overlay
+callout supers, mux non-copyrighted music. **Generation runs audio-off; music is added here** —
+cheaper and more controllable. A **VLM visual QC** pass (Phase 4) then checks the finished clip for
+defects the deterministic checks can't see and routes flagged clips to the human gate.
 
 ---
 
