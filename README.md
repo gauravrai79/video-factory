@@ -126,13 +126,15 @@ python scripts/serve.py           # -> http://localhost:8310
 
 A local web console (FastAPI + a zero-build SPA in [`frontend/`](frontend/)) over the same pipeline:
 
-- **Ingest** a SKU CSV (drag the file in), pick dry-run vs **Execute (paid)**, pin a model, toggle the
-  **human QC gate**, optionally finish a stand-in clip — then jobs run on the background worker.
-- **Dashboard** — live job table (state, model, cost, SLA bar, fallback marker) + headline stats,
-  auto-polling while the worker drains.
-- **Job drawer** — in-browser video player (seekable), spec-compliance probe, est/actual cost, and the
-  full **hash-chained audit trail** with a chain-valid check.
-- **QC review** — jobs held at the human gate show **Approve → deliver** / **Reject → rework** buttons.
+- **Ingest** a SKU CSV (drag the file in), pick dry-run vs **Execute (paid)**, pin a model, choose the
+  output **spec** (landscape / portrait), toggle the **human QC gate**, optionally finish a stand-in
+  clip — then jobs run on the background worker. Rows missing an `image_url` are flagged pre-flight.
+- **Dashboard** — live job table (state, model, dry/live cost, SLA bar, fallback marker) + headline
+  stats, auto-polling with a worker progress banner while the queue drains.
+- **Job drawer** — in-browser video player (seekable), spec-compliance probe, est/actual cost, the
+  **VLM QC verdict** with flagged issues, the fal request id, and the full **hash-chained audit trail**.
+- **QC review** — jobs flagged by VLM auto-QC (or the human gate) show **Approve → deliver** /
+  **Reject → rework** buttons.
 
 API endpoints mirror the AOP connector allow-list (`/api/ingest`, `/api/jobs`, `/api/jobs/{id}`,
 `/api/jobs/{id}/qc`, `/api/run`, `/api/media/...`). The sync backend drains in a background thread so
@@ -140,21 +142,25 @@ the UI stays responsive during multi-minute generations; switch to `VF_QUEUE_BAC
 multi-worker fan-out.
 
 ## Phased build (matches the feasibility plan)
-- **Phase 0** — spec lock (resolve the 960×720/≤10 MB/10–12s vs 1080×1920/17 MB/13s contradiction; see
-  [`backend/spec.py`](backend/spec.py)) + fal.ai/credentials.
+- **Phase 0** — spec lock (the 960×720/≤10 MB/10–12s vs 1080×1920/17 MB/13s contradiction; see
+  [`backend/spec.py`](backend/spec.py)). Both encoded as presets + a `portrait` (9:16) option;
+  default stays the written SOW until the client confirms. + fal.ai/credentials.
 - **Phase 1** — thin vertical slice (the `run_one.py` CLI). ✅
 - **Phase 2** — orchestration: pluggable queue (sync/RQ), state machine, retries, model fallback, SLA
   timers, idempotency, priority, cost-ceiling guardrail, batch CSV ingestion → 20K/month. ✅
-- **Phase 3** — ops + QC web console (CSV upload, batch dashboard, human QC gate, video review). ✅
-  Auto-check battery is in (deterministic spec validation); VLM-based flagging is still to come.
-- **Phase 4** — hardening: cost dashboards, per-model quality tracking, model-routing decision tree.
+- **Phase 3** — ops + QC web console (CSV upload, per-batch spec selector, batch dashboard, human QC
+  gate, in-browser video review). ✅
+- **Phase 4** — quality + cost: **VLM visual auto-QC** (defect flagging via fal vision → human gate),
+  accurate fal-matched cost model + Standard-tier default, fal request-id traceability. ✅
+  Still to come: cost dashboards, per-model quality tracking, Postgres/Railway + Google Drive delivery.
 
 ## Status
-**Phase 1–3 runnable and verified.** Deterministic finishing, ingest, cost model, and the
-Prompt-Builder run with no keys. The batch orchestrator drives the full state machine (generate →
-finish → qc → deliver) on the in-process queue with retries/fallback, idempotency, priority, SLA
-tracking, and a hash-chained audit per job. The Phase-3 web console (`scripts/serve.py`) drives all of
-it: CSV ingest, live dashboard, in-browser video review, and the human QC gate (approve/reject).
-**Verified against real fal.ai output** — a live Flipkart product image was turned into a
-spec-compliant 960×720 / 10s / 8 MB delivered clip. RQ multi-worker fan-out is behind
-`VF_QUEUE_BACKEND=rq`; Postgres/Drive and VLM auto-QC are Phase 4.
+**Phases 1–4 runnable and verified against real fal.ai output.** Deterministic finishing, ingest, cost
+model, and the Prompt-Builder run with no keys. The orchestrator drives the full state machine
+(generate → finish → **VLM QC** → deliver) on the in-process queue with retries/fallback, idempotency,
+priority, SLA tracking, and a hash-chained audit per job. The web console (`scripts/serve.py`) drives
+all of it: CSV ingest, spec selection, live dashboard, in-browser review, and the QC gate. **Proven on
+live Flipkart SKUs** — product images turned into spec-compliant delivered clips (landscape **and**
+portrait), with VLM auto-QC correctly flagging a defective clip (artifact + face distortion) for review
+and passing a clean one. Generation cost matches the fal dashboard (Kling Standard $0.56/10s).
+RQ multi-worker fan-out is behind `VF_QUEUE_BACKEND=rq`; Postgres/Drive delivery remain next.
