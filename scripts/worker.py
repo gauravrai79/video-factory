@@ -36,7 +36,7 @@ def main() -> int:
     url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     conn = Redis.from_url(url)
     queues = [Queue(HIGH_QUEUE, connection=conn), Queue(DEFAULT_QUEUE, connection=conn)]
-    print(f"Video Factory worker up on {url}; listening: {[q.name for q in queues]}")
+    print(f"Influencer Factory worker up on {url}; listening: {[q.name for q in queues]}")
     Worker(queues, connection=conn).work(with_scheduler=True)
     return 0
 

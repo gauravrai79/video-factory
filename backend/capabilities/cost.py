@@ -1,63 +1,65 @@
-"""Cost model — per-video and monthly projections.
+"""Cost model — per-post and portfolio (content-calendar) projections.
 
-Mirrors the feasibility doc's headline insight: at 20K/month with offshore QC labor, **generation
-cost dominates**; infra is a rounding error and QC labor is under 10%. So the optimization levers are
-the regeneration (reshoot) rate and the per-second model cost — not shaving QC.
+A post's cost is the sum of its shots: every shot is one generated still; video shots add a paid
+image-to-video pass. Still+Ken Burns shots add no generation spend (FFmpeg motion is free). The cost
+lever is therefore the still/video mix the planner chooses — see agents/storyboard.
+
+infra is a rounding error; there is no QC labor line in v1 (auto VLM QC). Plug the numbers from a
+planned storyboard straight in.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .fal_video import kling_cost, seedance_cost
+from . import pricing
 
 
 @dataclass
 class CostLine:
     label: str
-    per_video_usd: float
+    per_post_usd: float
     monthly_usd: float
 
 
-def estimate_generation(model: str, model_variant: str, duration_s: int) -> float:
-    """Single-attempt generation estimate (no reshoot multiplier) — used to price a job at enqueue
-    and to enforce the per-job cost ceiling before any paid call."""
-    base = kling_cost(model_variant, duration_s) if model == "kling" else seedance_cost(model_variant, duration_s)
-    return round(base, 4)
-
-
-def per_video_generation(model: str, model_variant: str, duration_s: int,
-                         regen_factor: float = 1.35) -> float:
-    """Generation cost including the reshoot multiplier (~35% need one retry to pass QC)."""
-    base = kling_cost(model_variant, duration_s) if model == "kling" else seedance_cost(model_variant, duration_s)
-    return round(base * regen_factor, 4)
+def estimate_post(*, n_stills: int, n_videos: int, video_seconds_each: float = 5.0,
+                  image_model: str | None = None, video_model: str | None = None) -> float:
+    """Estimate one post: stills + video passes. (The planner already sums this per storyboard; this
+    is for projections and what-ifs.)"""
+    stills = n_stills * pricing.image_cost(image_model)
+    videos = n_videos * pricing.video_cost(video_model, video_seconds_each)
+    return round(stills + videos, 4)
 
 
 def monthly_projection(
     *,
-    volume: int = 20_000,
-    model: str = "kling",
-    model_variant: str = "v2.1/standard",
-    duration_s: int = 12,
-    regen_factor: float = 1.35,
-    infra_per_video_usd: float = 0.12,
-    qc_per_video_usd: float = 0.20,    # Posture A (100% human) ballpark; see feasibility §5
+    reels_per_day: int = 3,
+    shots_per_reel: int = 6,
+    videos_per_reel: int = 2,
+    video_seconds_each: float = 5.0,
+    infra_per_post_usd: float = 0.03,
+    days: int = 30,
+    image_model: str | None = None,
+    video_model: str | None = None,
 ) -> dict:
-    gen = per_video_generation(model, model_variant, duration_s, regen_factor)
+    """Project monthly spend for one character's posting cadence."""
+    gen = estimate_post(n_stills=shots_per_reel, n_videos=videos_per_reel,
+                        video_seconds_each=video_seconds_each,
+                        image_model=image_model, video_model=video_model)
+    posts = reels_per_day * days
     lines = [
-        CostLine("Generation (incl. reshoot)", gen, round(gen * volume, 2)),
-        CostLine("Infra (orchestration+FFmpeg+storage)", infra_per_video_usd, round(infra_per_video_usd * volume, 2)),
-        CostLine("QC labor", qc_per_video_usd, round(qc_per_video_usd * volume, 2)),
+        CostLine("Generation (stills + video)", gen, round(gen * posts, 2)),
+        CostLine("Infra (orchestration+FFmpeg+storage)", infra_per_post_usd,
+                 round(infra_per_post_usd * posts, 2)),
     ]
-    total_per_video = round(sum(l.per_video_usd for l in lines), 4)
+    total_per_post = round(sum(l.per_post_usd for l in lines), 4)
     return {
-        "volume": volume,
-        "model": model,
-        "model_variant": model_variant,
-        "duration_s": duration_s,
-        "regen_factor": regen_factor,
+        "reels_per_day": reels_per_day,
+        "posts_per_month": posts,
+        "image_model": image_model or pricing.DEFAULT_IMAGE_MODEL,
+        "video_model": video_model or pricing.DEFAULT_VIDEO_MODEL,
         "lines": [l.__dict__ for l in lines],
-        "total_per_video_usd": total_per_video,
-        "total_monthly_usd": round(total_per_video * volume, 2),
-        "note": "Generation dominates; cut the reshoot rate (better prompts/reference conditioning) to move the needle.",
+        "total_per_post_usd": total_per_post,
+        "total_monthly_usd": round(total_per_post * posts, 2),
+        "note": "Lower the video-per-reel budget (more still+Ken Burns) to cut spend.",
     }

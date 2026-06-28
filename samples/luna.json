@@ -1,0 +1,20 @@
+{
+  "name": "Luna",
+  "slug": "luna",
+  "species": "person",
+  "age": "24",
+  "dna_prompt": "a 24 year old woman, fit sun-kissed figure, long wavy brunette hair, warm hazel eyes, natural glamour look, photorealistic",
+  "safety_tolerance": 5,
+  "persona": {
+    "appearance": "fit young woman with sun-kissed skin",
+    "facial_features": "soft symmetrical features, warm hazel eyes",
+    "body_type": "athletic and toned",
+    "hair": "long wavy brunette",
+    "clothing_style": "beach glam and elevated streetwear",
+    "personality": "warm, playful, aspirational",
+    "niche": "travel and glamour lifestyle",
+    "environments": ["beach", "luxury hotels", "city rooftops"]
+  },
+  "social_accounts": {"instagram": "@luna.example"},
+  "posting_schedule": {"reels_per_day": 3}
+}

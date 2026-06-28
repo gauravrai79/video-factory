@@ -1,84 +1,87 @@
-"""Video Factory ops + QC console — FastAPI app.
+"""AI Influencer Factory — ops + QC console (FastAPI app).
 
-This is the `backend/` API the README/AOP describe: the connector calls these endpoints, and the
-`frontend/` ops console (served at `/`) drives them. Endpoints mirror the AOP connector allow-list:
-ingest_batch, list_jobs, get_job, generate (drain), qc_decision, deliver.
+Endpoints:
+  - characters: create personas, list, mint a reference sheet
+  - storyboards: plan a post (character + brief -> priced shot list); optionally commit + run it
+  - jobs: list/inspect posts moving through the machine, human QC decisions
+  - media: stream finished/delivered reels
+  - scenes: the curated scene-template catalog the planner draws from
 
 Run it:  python scripts/serve.py        (or: uvicorn backend.api:app --reload --port 8310)
 
-The sync backend drains in a background thread so the UI stays responsive while clips are generated
-(real fal calls take minutes). Each request opens its own JobStore (its own sqlite connection), so
-reads stay fresh while the worker thread writes (WAL + busy_timeout, set in JobStore).
+The sync backend drains in a background thread so the UI stays responsive while posts are generated
+(real fal calls take minutes). Each request opens its own JobStore (its own sqlite connection).
 """
 
 from __future__ import annotations
 
-import csv
-import io
 import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import runner, sla as sla_mod
-from .ingest import parse_row
+from .agents.storyboard import plan_storyboard
+from .capabilities import fal_image, pricing
+from .characters import CharacterStore
 from .jobstore import JobStore, State
-from .pipeline import create_job, cost_ceiling_usd, qc_decision
+from .pipeline import cost_ceiling_usd, create_job, qc_decision
+from .scene_library import catalog as scene_catalog
 from .spec import PRESETS, get_spec
 
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
 OUT_DIR = ROOT / "out"
-MEDIA_KINDS = {"finished", "delivered", "clips"}
+MEDIA_KINDS = {"finished", "delivered"}
 
-app = FastAPI(title="Video Factory", version="0.3.0")
+app = FastAPI(title="AI Influencer Factory", version="1.0.0")
 
 
 def _tenant() -> str:
-    return os.environ.get("VF_TENANT_ID", "flipkart")
+    return os.environ.get("VF_TENANT_ID", "factory")
 
 
 def _project() -> str:
-    return os.environ.get("VF_PROJECT", "video-factory")
+    return os.environ.get("VF_PROJECT", "influencer-factory")
 
 
-def _has_media(fsn: str, kind: str) -> bool:
-    return (OUT_DIR / kind / f"{fsn}.mp4").is_file()
+def _has_media(slug: str, kind: str) -> bool:
+    return (OUT_DIR / kind / f"{slug}.mp4").is_file()
 
 
 def _job_view(store: JobStore, job, *, full: bool = False) -> dict[str, Any]:
     p = job.payload or {}
-    sku = p.get("sku", {}) or {}
+    char = p.get("character", {}) or {}
+    sb = p.get("storyboard", {}) or {}
+    gen = job.result.get("generation") or {}
     s = sla_mod.status_for(store, job)
     view: dict[str, Any] = {
         "job_id": job.job_id,
-        "fsn": job.fsn,
-        "title": sku.get("title", ""),
-        "category": sku.get("category", ""),
-        "tier": sku.get("tier", "basic"),
+        "slug": job.slug,
+        "character": char.get("name", ""),
+        "character_id": char.get("character_id", ""),
+        "format": sb.get("format", ""),
+        "brief": sb.get("brief", ""),
+        "shots": len(sb.get("shots", [])),
         "state": job.state.value,
-        "model": (p.get("route") or {}).get("model"),
-        "force_model": p.get("force_model"),
-        "execute": bool(p.get("execute")),
+        "tier": p.get("tier", "basic"),
+        "execute": bool(p.get("execute", True)),
         "human_qc": bool(p.get("human_qc")),
         "priority": p.get("priority"),
         "est_cost_usd": p.get("est_cost_usd"),
-        "cost_usd": (job.result.get("generation") or {}).get("cost_usd"),
-        "request_id": (job.result.get("generation") or {}).get("request_id"),
-        "fell_back": (job.result.get("generation") or {}).get("fell_back"),
+        "cost_usd": gen.get("cost_usd"),
         "finished": job.result.get("finished"),
         "violations": job.result.get("violations"),
         "vlm_qc": job.result.get("vlm_qc"),
         "held": job.result.get("held"),
         "error": job.result.get("error"),
         "failed_stage": job.result.get("failed_stage"),
-        "has_image": bool(sku.get("image_url") or sku.get("image_urls")),
         "sla": {"elapsed_s": s.elapsed_s, "budget_s": s.budget_s,
                 "breached": s.breached, "remaining_s": s.remaining_s},
-        "media": {k: _has_media(job.fsn, k) for k in MEDIA_KINDS},
+        "media": {k: _has_media(job.slug, k) for k in MEDIA_KINDS},
         "updated_at": job.updated_at,
         "created_at": job.created_at,
     }
@@ -90,7 +93,7 @@ def _job_view(store: JobStore, job, *, full: bool = False) -> dict[str, Any]:
     return view
 
 
-# --------------------------------------------------------------------------- API
+# --------------------------------------------------------------------------- summary / config
 
 @app.get("/api/summary")
 def summary() -> dict[str, Any]:
@@ -100,17 +103,20 @@ def summary() -> dict[str, Any]:
     spent = 0.0
     for j in jobs:
         by_state[j.state.value] = by_state.get(j.state.value, 0) + 1
-        spent += float((j.result.get("generation") or {}).get("cost_usd") or 0) if j.payload.get("execute") else 0
+        spent += float((j.result.get("generation") or {}).get("cost_usd") or 0)
     breaches = [s for s in sla_mod.evaluate(store, tenant_id=_tenant()) if s.breached]
+    cs = CharacterStore(store)
     return {
         "tenant": _tenant(),
         "project": _project(),
         "queue_backend": os.environ.get("VF_QUEUE_BACKEND", "sync"),
         "spec": get_spec().name,
-        "specs": [{"name": p.name, "label": f"{p.name} · {p.width}×{p.height} · "
-                   f"{int(p.min_duration_s)}-{int(p.max_duration_s)}s"} for p in PRESETS.values()],
+        "specs": [{"name": pp.name, "label": f"{pp.name} · {pp.width}×{pp.height}"} for pp in PRESETS.values()],
         "fal_key_present": bool(os.environ.get("FAL_KEY") or os.environ.get("FAL_AI_API_KEY")),
         "cost_ceiling_usd": cost_ceiling_usd(),
+        "image_model": pricing.DEFAULT_IMAGE_MODEL,
+        "video_model": pricing.DEFAULT_VIDEO_MODEL,
+        "characters": len(cs.list(_tenant())),
         "total_jobs": len(jobs),
         "by_state": by_state,
         "spent_usd": round(spent, 4),
@@ -118,6 +124,127 @@ def summary() -> dict[str, Any]:
         "drain": runner.progress(),
     }
 
+
+@app.get("/api/scenes")
+def scenes() -> list[dict[str, Any]]:
+    return scene_catalog()
+
+
+# --------------------------------------------------------------------------- characters
+
+@app.get("/api/characters")
+def list_characters() -> list[dict[str, Any]]:
+    cs = CharacterStore()
+    return [c.as_dict() for c in cs.list(_tenant())]
+
+
+@app.post("/api/characters")
+def create_character(body: dict[str, Any]) -> dict[str, Any]:
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    slug = (body.get("slug") or name).strip().lower().replace(" ", "-")
+    cs = CharacterStore()
+    if cs.get_by_slug(_tenant(), slug):
+        raise HTTPException(409, f"character slug '{slug}' already exists")
+    fields = {k: v for k, v in body.items()
+              if k in ("species", "age", "persona", "reference_images", "dna_prompt",
+                       "safety_tolerance", "social_accounts", "posting_schedule")}
+    char = cs.create(tenant_id=_tenant(), name=name, slug=slug, **fields)
+    return char.as_dict()
+
+
+@app.get("/api/characters/{character_id}")
+def get_character(character_id: str) -> dict[str, Any]:
+    cs = CharacterStore()
+    char = cs.get(character_id)
+    if not char:
+        raise HTTPException(404, "character not found")
+    return char.as_dict()
+
+
+@app.post("/api/characters/{character_id}/mint")
+def mint_reference(character_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Mint a reference sheet for a text-described character (e.g. a synthetic glamour persona).
+    execute=false (default) returns the priced plan without spending."""
+    body = body or {}
+    cs = CharacterStore()
+    char = cs.get(character_id)
+    if not char:
+        raise HTTPException(404, "character not found")
+    if not char.dna_prompt:
+        raise HTTPException(400, "character has no dna_prompt to mint from")
+    n = int(body.get("n", 4))
+    execute = bool(body.get("execute", False))
+    paths, cost, errors = fal_image.mint_reference_sheet(
+        dna_prompt=char.dna_prompt, out_dir=str(OUT_DIR), slug=char.slug, n=n,
+        safety_tolerance=char.safety_tolerance, execute=execute)
+    if execute and paths:
+        cs.add_reference_images(character_id, paths)
+    return {"character_id": character_id, "minted": paths, "cost_usd": cost,
+            "errors": errors, "executed": execute}
+
+
+# --------------------------------------------------------------------------- storyboards / posts
+
+@app.post("/api/storyboards")
+def storyboard(body: dict[str, Any]) -> dict[str, Any]:
+    """Plan a post for a character. By default also commits it as a job and starts generating.
+    Set create=false to only preview the priced storyboard; execute=false for a dry (priced) run."""
+    cs = CharacterStore()
+    char = cs.get(body.get("character_id", ""))
+    if not char:
+        raise HTTPException(404, "character not found (pass character_id)")
+
+    fmt = body.get("format", "reel")
+    try:
+        out_spec = get_spec(fmt)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    sb = plan_storyboard(
+        char,
+        brief=body.get("brief", ""),
+        fmt=fmt,
+        tags=body.get("tags") or [],
+        n_shots=int(body.get("n_shots", 6)),
+        video_budget=int(body.get("video_budget", 2)),
+        refine=bool(body.get("refine", True)),
+    )
+
+    create = bool(body.get("create", True))
+    if not create:
+        return {"storyboard": sb.as_dict(), "committed": False}
+
+    execute = bool(body.get("execute", True))
+    store = JobStore()
+    job, is_new = create_job(
+        store, char, sb, tenant_id=_tenant(), project=_project(), spec=out_spec,
+        execute=execute, human_qc=bool(body.get("human_qc", False)),
+        tier=body.get("tier", "basic"), dedupe=True)
+
+    no_ref_warning = None
+    if not char.reference_images and not char.dna_prompt:
+        no_ref_warning = ("character has no reference images or dna_prompt — identity will be "
+                          "bootstrapped from the first generated still (less controllable).")
+
+    block_run = execute and not (os.environ.get("FAL_KEY") or os.environ.get("FAL_AI_API_KEY"))
+    run = bool(body.get("run", True)) and not block_run
+    started = runner.start_background_drain() if run else False
+    return {"storyboard": sb.as_dict(), "committed": True, "created": is_new,
+            "job_id": job.job_id, "slug": job.slug, "est_cost_usd": sb.est_cost_usd,
+            "warnings": [w for w in [no_ref_warning] if w],
+            "blocked_run": block_run, "drain_started": started, "drain": runner.progress()}
+
+
+@app.post("/api/run")
+def run() -> dict[str, Any]:
+    """Drain PENDING posts in the background (generate -> assemble -> qc -> deliver)."""
+    started = runner.start_background_drain()
+    return {"drain_started": started, "drain": runner.progress()}
+
+
+# --------------------------------------------------------------------------- jobs / qc
 
 @app.get("/api/jobs")
 def list_jobs(state: str | None = None) -> list[dict[str, Any]]:
@@ -137,66 +264,6 @@ def get_job(job_id: str) -> dict[str, Any]:
     return _job_view(store, job, full=True)
 
 
-@app.post("/api/ingest")
-async def ingest(
-    file: UploadFile | None = File(default=None),
-    execute: bool = Form(default=False),
-    model: str | None = Form(default=None),
-    human_qc: bool = Form(default=False),
-    stand_in: str | None = Form(default=None),
-    spec: str | None = Form(default=None),
-    auto_run: bool = Form(default=True),
-) -> dict[str, Any]:
-    """Upload a CSV manifest -> create + (optionally) start running jobs. Mirrors AOP ingest_batch."""
-    if file is None:
-        raise HTTPException(400, "CSV file required")
-    try:
-        out_spec = get_spec(spec or None)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    raw = (await file.read()).decode("utf-8-sig")
-    rows = [parse_row(r) for r in csv.DictReader(io.StringIO(raw))]
-    rows = [r for r in rows if r.fsn]
-    if not rows:
-        raise HTTPException(400, "no valid SKU rows (need an 'fsn' column)")
-
-    # Pre-flight: generation needs a DIRECT image URL, not a product-page URL. Warn (don't silently
-    # fail) so the operator sees the problem before a paid run instead of after N failed jobs.
-    no_image = [r.fsn for r in rows if not (r.image_url or r.image_urls)]
-    page_urls = [r.fsn for r in rows if r.fsn.startswith("http")]
-    warnings: list[str] = []
-    if no_image:
-        warnings.append(f"{len(no_image)} row(s) have no image_url — generation will fail for them. "
-                        "Provide a direct product image URL (e.g. a .jpg), not a product-page link.")
-    if page_urls:
-        warnings.append(f"{len(page_urls)} row(s) use a URL as the FSN — looks like a product-page "
-                        "link in the 'fsn' column. FSN should be the SKU id; the image goes in 'image_url'.")
-
-    store = JobStore()
-    created, reused = [], []
-    for row in rows:
-        job, is_new = create_job(
-            store, row, tenant_id=_tenant(), project=_project(), spec=out_spec,
-            execute=execute, force_model=(model or None), human_qc=human_qc,
-            stand_in_clip=(stand_in or None), dedupe=True,
-        )
-        (created if is_new else reused).append(job.fsn)
-
-    # Don't auto-run a paid batch that will obviously fail; surface the warning and let the operator fix it.
-    block_run = execute and bool(no_image)
-    started = (runner.start_background_drain() if (auto_run and not block_run) else False)
-    return {"created": created, "reused": reused, "count": len(rows),
-            "warnings": warnings, "blocked_run": block_run,
-            "drain_started": started, "drain": runner.progress()}
-
-
-@app.post("/api/run")
-def run() -> dict[str, Any]:
-    """Drain PENDING jobs in the background (generate -> finish -> qc -> deliver)."""
-    started = runner.start_background_drain()
-    return {"drain_started": started, "drain": runner.progress()}
-
-
 @app.post("/api/jobs/{job_id}/qc")
 def qc(job_id: str, body: dict[str, Any]) -> dict[str, Any]:
     """Human QC decision: {"approve": true} clears -> delivered; {"approve": false, "reason": ...} -> rework."""
@@ -212,11 +279,11 @@ def qc(job_id: str, body: dict[str, Any]) -> dict[str, Any]:
     return _job_view(store, job, full=True)
 
 
-@app.get("/api/media/{kind}/{fsn}")
-def media(kind: str, fsn: str):
+@app.get("/api/media/{kind}/{slug}")
+def media(kind: str, slug: str):
     if kind not in MEDIA_KINDS:
         raise HTTPException(404, "unknown media kind")
-    path = OUT_DIR / kind / f"{fsn}.mp4"
+    path = OUT_DIR / kind / f"{slug}.mp4"
     if not path.is_file():
         raise HTTPException(404, "media not found")
     return FileResponse(str(path), media_type="video/mp4")  # Starlette handles Range -> seekable
@@ -225,7 +292,7 @@ def media(kind: str, fsn: str):
 @app.get("/api/sla")
 def sla() -> list[dict[str, Any]]:
     store = JobStore()
-    return [{"fsn": s.fsn, "tier": s.tier, "state": s.state, "elapsed_s": s.elapsed_s,
+    return [{"slug": s.slug, "tier": s.tier, "state": s.state, "elapsed_s": s.elapsed_s,
              "budget_s": s.budget_s, "remaining_s": s.remaining_s, "breached": s.breached}
             for s in sla_mod.evaluate(store, tenant_id=_tenant())]
 

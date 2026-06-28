@@ -1,27 +1,25 @@
-# Video Factory — dependencies
+# AI Influencer Factory — dependencies
 
-# --- Phase 1 vertical slice (CLI) ---
+# --- Core (CLI + pipeline) ---
 requests>=2.31
 python-dotenv>=1.0
-PyYAML>=6.0
 
-# --- Agents (Spine standard: Google ADK) ---
-google-adk>=1.30           # Prompt-Builder / QC-flagger / Rework agents
-# anthropic>=0.40          # optional alt provider for agents
-# google-generativeai      # pulled in by google-adk for Gemini
+# --- Optional prompt refinement (VF_USE_LLM=1) ---
+# google-adk>=1.30           # Gemini-based still-prompt refinement
 
-# --- Phase 2 (orchestration) ---
-# Queue: the default `sync` backend needs NOTHING extra (stdlib only) — it runs on Windows.
+# --- Orchestration ---
+# Default `sync` backend needs nothing extra (stdlib only) — runs on Windows.
 # The `rq` backend (VF_QUEUE_BACKEND=rq) needs these + a reachable Redis (Linux/macOS workers):
 # redis>=5.0
-# rq>=1.16                 # queue worker (RQ workers fork -> Linux/macOS)
+# rq>=1.16
 
-# --- Phase 3 (ops + QC web UI / API) ---
+# --- Console (API + web UI) ---
 fastapi>=0.110
 uvicorn[standard]>=0.29
-python-multipart>=0.0.9    # CSV upload (multipart form)
 
-# --- Phase 2+ (Postgres + delivery; not required to run the batch/UI locally) ---
+# --- Postgres + delivery (prod; not required to run locally) ---
 # sqlalchemy>=2.0
-# psycopg[binary]>=3.1     # Postgres driver (Railway)
-# google-api-python-client # Google Drive delivery
+# psycopg[binary]>=3.1       # Postgres driver (Railway)
+# google-api-python-client   # Google Drive delivery (later phase)
+
+# Note: requires ffmpeg/ffprobe on PATH (or set FFMPEG_BIN / FFPROBE_BIN).

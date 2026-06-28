@@ -1,4 +1,4 @@
-"""Launch the Video Factory ops + QC console.
+"""Launch the AI Influencer Factory ops + QC console.
 
   python scripts/serve.py                 # http://localhost:8310
   VF_API_PORT=9000 python scripts/serve.py
@@ -27,7 +27,7 @@ def main() -> int:
     host = os.environ.get("VF_API_HOST", "127.0.0.1")
     port = int(os.environ.get("VF_API_PORT", "8310"))
     url = f"http://{host if host != '0.0.0.0' else 'localhost'}:{port}"
-    print(f"Video Factory console -> {url}")
+    print(f"AI Influencer Factory console -> {url}")
     if os.environ.get("VF_OPEN_BROWSER", "1") == "1":
         try:
             webbrowser.open(url)

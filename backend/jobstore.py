@@ -1,11 +1,12 @@
 """Job state machine + hash-chained audit.
 
-Phase 1 uses stdlib sqlite3 (zero deps, real transactional semantics). Phase 2 swaps the connection
-for Postgres on Railway with `(tenant_id, project)` RLS — the schema and the repository API are
-already shaped for it, so it's a driver change, not a rewrite.
+A Job is one post (a storyboard rendered into a finished reel) moving through the factory. Uses
+stdlib sqlite3 (zero deps, real transactional semantics); a Postgres swap on Railway with
+`(tenant_id, project)` RLS is a driver change, not a rewrite — the schema and repository API are
+already shaped for it.
 
-The audit chain mirrors Spine's tamper-evident audit bus: each event stores the hash of the previous
-event + its own payload, so the full history of a job is verifiable end-to-end.
+The audit chain is tamper-evident: each event stores the hash of the previous event + its own
+payload, so the full history of a job is verifiable end-to-end.
 """
 
 from __future__ import annotations
@@ -67,10 +68,10 @@ class Job:
     job_id: str
     tenant_id: str
     project: str
-    fsn: str
+    slug: str                                               # post slug, e.g. "luna-2026-06-28-001"
     state: State
-    payload: dict[str, Any] = field(default_factory=dict)   # SKU manifest row, prompt, model route
-    result: dict[str, Any] = field(default_factory=dict)    # clip path, finished path, cost, qc
+    payload: dict[str, Any] = field(default_factory=dict)   # character, storyboard, model route
+    result: dict[str, Any] = field(default_factory=dict)    # shot paths, finished path, cost, qc
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -93,7 +94,7 @@ class JobStore:
                 job_id TEXT PRIMARY KEY,
                 tenant_id TEXT NOT NULL,
                 project TEXT NOT NULL,
-                fsn TEXT NOT NULL,
+                slug TEXT NOT NULL,
                 state TEXT NOT NULL,
                 payload TEXT NOT NULL DEFAULT '{}',
                 result TEXT NOT NULL DEFAULT '{}',
@@ -121,19 +122,19 @@ class JobStore:
 
     # ---- jobs ----
 
-    def create(self, *, tenant_id: str, project: str, fsn: str,
+    def create(self, *, tenant_id: str, project: str, slug: str,
                payload: dict[str, Any], idempotency_key: str | None = None) -> Job:
         now = time.time()
         job_id = str(uuid.uuid4())
         self.conn.execute(
-            "INSERT INTO jobs(job_id,tenant_id,project,fsn,state,payload,result,idempotency_key,created_at,updated_at)"
+            "INSERT INTO jobs(job_id,tenant_id,project,slug,state,payload,result,idempotency_key,created_at,updated_at)"
             " VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (job_id, tenant_id, project, fsn, State.PENDING.value,
+            (job_id, tenant_id, project, slug, State.PENDING.value,
              json.dumps(payload), "{}", idempotency_key, now, now),
         )
         self.conn.commit()
-        job = Job(job_id, tenant_id, project, fsn, State.PENDING, payload, {}, now, now)
-        self.append_event(job, "created", {"fsn": fsn})
+        job = Job(job_id, tenant_id, project, slug, State.PENDING, payload, {}, now, now)
+        self.append_event(job, "created", {"slug": slug})
         return job
 
     def get(self, job_id: str) -> Optional[Job]:
@@ -141,8 +142,8 @@ class JobStore:
         return self._row_to_job(row) if row else None
 
     def find_by_idempotency_key(self, tenant_id: str, project: str, key: str) -> Optional[Job]:
-        """Most-recent job for an idempotency key, scoped by tenant/project (Spine RLS shape).
-        Used to skip re-ingesting the same SKU twice."""
+        """Most-recent job for an idempotency key, scoped by tenant/project (RLS shape).
+        Used to skip re-creating the same post twice."""
         row = self.conn.execute(
             "SELECT * FROM jobs WHERE tenant_id=? AND project=? AND idempotency_key=?"
             " ORDER BY created_at DESC LIMIT 1",
@@ -222,7 +223,7 @@ class JobStore:
     def _row_to_job(row: sqlite3.Row) -> Job:
         return Job(
             job_id=row["job_id"], tenant_id=row["tenant_id"], project=row["project"],
-            fsn=row["fsn"], state=State(row["state"]),
+            slug=row["slug"], state=State(row["state"]),
             payload=json.loads(row["payload"]), result=json.loads(row["result"]),
             created_at=row["created_at"], updated_at=row["updated_at"],
         )

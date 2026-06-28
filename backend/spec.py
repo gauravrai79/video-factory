@@ -1,13 +1,11 @@
-"""Output specification — the locked SOW contract for finished videos.
+"""Output specification — the delivery contract for a finished post.
 
-Phase 0 of the build plan is to resolve the spec contradiction the feasibility doc flagged:
+A post is rendered to a platform format (vertical reel, square feed, landscape long-form). Unlike a
+single product clip, a post is a multi-shot reel whose length is the sum of its shots, so we target a
+video bitrate (quality) rather than a fixed file-size band — the file size follows the duration.
 
-    SOW (written):   960x720 / 720p, <= 10 MB, 10-12 s
-    Sample asset:    1080x1920,       17 MB, 13 s
-
-The finishing layer cannot be built until this is settled with the client. We encode BOTH as
-presets and select via VF_SPEC_PRESET, so flipping the decision is one env var, not a code change.
-Default is the written SOW.
+Select the active default with VF_SPEC_PRESET; a storyboard can also carry its own format which maps
+to one of these presets. Default is the vertical reel (Instagram Reels / TikTok / YouTube Shorts).
 """
 
 from __future__ import annotations
@@ -23,23 +21,22 @@ class OutputSpec:
     height: int
     min_duration_s: float
     max_duration_s: float
-    min_size_mb: float            # two-pass encode targets the middle of the band
-    max_size_mb: float
+    video_mbps: float = 8.0           # target video bitrate; size follows duration
     fps: int = 30
     video_codec: str = "libx264"
     audio_codec: str = "aac"
-    audio_bitrate_kbps: int = 96
-    watermark_text: str = "Synthetically Generated"
-    # End-frame rule: final frame loops back to the opening shot, no logos.
-    enforce_end_frame_loop: bool = True
+    audio_bitrate_kbps: int = 128
+    # Watermark is OFF by default — a burned-in caption breaks the influencer persona. Set a value
+    # (e.g. an @handle) only if a character wants a signature super.
+    watermark_text: str = ""
 
     @property
     def target_duration_s(self) -> float:
         return (self.min_duration_s + self.max_duration_s) / 2
 
     @property
-    def target_size_mb(self) -> float:
-        return (self.min_size_mb + self.max_size_mb) / 2
+    def video_bitrate_kbps(self) -> int:
+        return int(self.video_mbps * 1000)
 
     @property
     def aspect_ratio(self) -> str:
@@ -50,45 +47,56 @@ class OutputSpec:
 
 
 PRESETS: dict[str, OutputSpec] = {
-    # Written SOW — the default until the client confirms.
-    "sow_written": OutputSpec(
-        name="sow_written",
-        width=960,
-        height=720,
-        min_duration_s=10.0,
-        max_duration_s=12.0,
-        min_size_mb=6.0,
-        max_size_mb=10.0,
-    ),
-    # The delivered sample asset (vertical, larger). Selectable if the client governs by the sample.
-    "sample": OutputSpec(
-        name="sample",
+    # Vertical reel — Instagram Reels / TikTok / YouTube Shorts. The default.
+    "reel": OutputSpec(
+        name="reel",
         width=1080,
         height=1920,
-        min_duration_s=12.0,
-        max_duration_s=13.0,
-        min_size_mb=12.0,
-        max_size_mb=17.0,
+        min_duration_s=8.0,
+        max_duration_s=90.0,
+        video_mbps=8.0,
     ),
-    # Portrait 9:16 — matches the generators' native vertical output, so apparel FILLS the frame with
-    # no letterboxing (the landscape 960x720 spec pillarboxes portrait product photos). Best for
-    # mobile PDP / social. SOW duration band; sized for 1080x1920.
-    "portrait": OutputSpec(
-        name="portrait",
+    # Square feed post (Instagram / Facebook).
+    "square": OutputSpec(
+        name="square",
         width=1080,
-        height=1920,
-        min_duration_s=10.0,
-        max_duration_s=12.0,
-        min_size_mb=8.0,
-        max_size_mb=14.0,
+        height=1080,
+        min_duration_s=5.0,
+        max_duration_s=60.0,
+        video_mbps=8.0,
     ),
+    # Landscape long-form — YouTube / horizontal players.
+    "landscape": OutputSpec(
+        name="landscape",
+        width=1920,
+        height=1080,
+        min_duration_s=15.0,
+        max_duration_s=600.0,
+        video_mbps=10.0,
+    ),
+}
+
+# Map a storyboard `format` to a spec preset (a story can target "short" which is a vertical reel).
+FORMAT_TO_PRESET = {
+    "reel": "reel",
+    "short": "reel",
+    "story": "reel",
+    "tiktok": "reel",
+    "square": "square",
+    "feed": "square",
+    "longform": "landscape",
+    "youtube": "landscape",
+    "landscape": "landscape",
 }
 
 
 def get_spec(preset: str | None = None) -> OutputSpec:
-    preset = preset or os.environ.get("VF_SPEC_PRESET", "sow_written")
+    preset = preset or os.environ.get("VF_SPEC_PRESET", "reel")
+    # Allow a storyboard format name to resolve to its spec.
+    preset = FORMAT_TO_PRESET.get(preset, preset)
     if preset not in PRESETS:
         raise ValueError(
-            f"Unknown VF_SPEC_PRESET={preset!r}. Choose one of: {', '.join(PRESETS)}"
+            f"Unknown spec/format {preset!r}. Choose one of: {', '.join(PRESETS)} "
+            f"(or a format: {', '.join(FORMAT_TO_PRESET)})"
         )
     return PRESETS[preset]

@@ -1,9 +1,10 @@
 """VLM auto-QC — catch visual defects a deterministic spec check can't see.
 
-The finishing layer guarantees dims/duration/size, but it cannot tell that the model hallucinated a
-floating black patch, warped the garment, or grew an extra hand. This flagger samples frames from the
-finished clip and asks a vision LLM (via fal's any-llm/vision — reuses FAL_KEY, no new credential) for
-a structured defect verdict. Flagged clips route to the human QC gate instead of auto-approving.
+The finishing layer guarantees dims/duration, but it cannot tell that the model drifted the
+character's face between shots, grew an extra hand, or warped the body. This flagger samples frames
+from the finished post (optionally alongside a character reference image) and asks a vision LLM (via
+fal's any-llm/vision — reuses FAL_KEY) for a structured defect verdict focused on IDENTITY
+CONSISTENCY and human anatomy. Flagged posts route to the human QC gate instead of auto-approving.
 
 Design rule: VLM QC is ADVISORY and ADDITIVE. If the call fails (no key, endpoint down/deprecated,
 bad JSON), it returns `ran=False` and the pipeline proceeds on the deterministic checks alone — a
@@ -20,30 +21,31 @@ import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from ..capabilities.fal_video import _fal_key, _poll_fal
+from ..capabilities.fal_video import _fal_key, _poll_fal, image_ref
 from ..finishing import FFMPEG, _summary
 from ..spec import OutputSpec
 
 DEFAULT_VLM_MODEL = "google/gemini-2.5-flash-lite"
 
 _SYSTEM = (
-    "You are a strict quality-control inspector for an ecommerce product-video factory. You are shown "
-    "several frames sampled from one short AI-generated product clip. Judge ONLY for defects that would "
-    "make the clip unusable for a retail catalog."
+    "You are a strict quality-control inspector for an AI influencer content factory. You are shown "
+    "frames sampled from one short AI-generated post (and possibly a reference image of the character "
+    "as the FIRST image). Judge whether the post is publishable and whether the character's identity "
+    "stays consistent."
 )
 
 _PROMPT = (
-    "Inspect these frames of a single product video for generation defects:\n"
-    "- floating/extra artifacts (stray shapes, black patches, smears, ghosting)\n"
-    "- garment/product distortion (warped shape, melted edges, impossible folds)\n"
-    "- anatomy errors (extra or missing limbs/fingers, deformed face or hands)\n"
-    "- unwanted added text, logos, or watermarks (ignore a small 'Synthetically Generated' caption and "
-    "short marketing supers — those are intentional)\n"
-    "- the product changing color, pattern, or identity between frames\n\n"
+    "If a reference image is provided first, the person/animal in the video frames must look like the "
+    "SAME individual. Inspect for:\n"
+    "- identity drift (face/body/hair changing between frames, or not matching the reference)\n"
+    "- anatomy errors (extra or missing limbs/fingers, deformed face or hands, melted features)\n"
+    "- artifacts (stray shapes, black patches, smears, ghosting, warping/morphing)\n"
+    "- unwanted added text, logos, or watermarks\n"
+    "- clothing/appearance changing inconsistently between frames\n\n"
     "Respond with ONLY a JSON object, no prose, no code fences:\n"
     '{"pass": true|false, "issues": [{"type": "...", "detail": "...", "severity": "minor|major"}], '
     '"summary": "one short sentence"}\n'
-    "Set pass=false if there is any MAJOR defect. Minor issues alone can still pass."
+    "Set pass=false if identity drifts noticeably or there is any MAJOR defect. Minor issues alone can pass."
 )
 
 
@@ -105,8 +107,10 @@ def _parse_verdict(output: str) -> tuple[bool, list[dict], str]:
 
 
 def run_vlm_qc(video_path: str | Path, spec: OutputSpec | None = None, *,
-               model: str | None = None, n_frames: int = 4) -> QCVerdict:
-    """Sample frames -> vision LLM -> defect verdict. Never raises; returns ran=False on any failure."""
+               model: str | None = None, n_frames: int = 4,
+               reference_image: str | None = None) -> QCVerdict:
+    """Sample frames -> vision LLM -> defect verdict. If a character reference image is given it's
+    sent first so the model can check identity match. Never raises; ran=False on any failure."""
     model = model or os.environ.get("VF_VLM_MODEL", DEFAULT_VLM_MODEL)
     if not _fal_key():
         return QCVerdict(ran=False, error="FAL_KEY not set", model=model)
@@ -116,6 +120,11 @@ def run_vlm_qc(video_path: str | Path, spec: OutputSpec | None = None, *,
         frames = _sample_frames(video_path, n_frames)
         if not frames:
             return QCVerdict(ran=False, error="frame extraction failed", model=model)
+        if reference_image:
+            try:
+                frames = [image_ref(reference_image), *frames]   # reference first
+            except Exception:
+                pass
         payload = {
             "prompt": _PROMPT, "system_prompt": _SYSTEM, "image_urls": frames,
             "model": model, "max_tokens": 600, "temperature": 0.0,

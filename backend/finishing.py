@@ -1,14 +1,14 @@
-"""Deterministic finishing layer — FFmpeg, 100% automatable.
+"""Deterministic finishing + assembly layer — FFmpeg, 100% automatable.
 
-Everything the SOW mandates that isn't generative lives here and is fully reliable:
-  - enforce exact dimensions (scale-to-fit + pad, never crop the product)
-  - clamp duration into the spec band
-  - two-pass encode to land inside the target size band
-  - burn the "Synthetically Generated" watermark (bottom, clear of product)
-  - overlay callout supers (USPs) on a schedule
+Turns a storyboard's per-shot media (generated stills and video clips) into one finished post:
+  - Ken Burns motion on stills (free pan/zoom — the cost lever that avoids paid video)
+  - normalize every shot to the exact platform dimensions (scale-to-fit + pad, never crop)
+  - stitch shots in order (hard cut or crossfade)
+  - optional opening hook super + optional @handle watermark (off by default)
   - mux non-copyrighted background music (generation runs audio-off)
+  - encode to the platform spec at a target bitrate
 
-This layer guarantees spec compliance regardless of what the model produced.
+This layer guarantees spec compliance regardless of what the models produced.
 """
 
 from __future__ import annotations
@@ -125,116 +125,152 @@ class FinishResult:
     error: str | None = None
 
 
-def _video_filter(spec: OutputSpec, callouts: list[Callout], pad_color: str) -> str:
+@dataclass
+class ShotMedia:
+    """One resolved shot ready to assemble: a still image (Ken Burns) or a video clip."""
+    render_mode: str               # "kenburns" | "video"
+    media_path: str                # png for kenburns, mp4 for video
+    duration_s: float
+    zoom: str = "in"               # "in" | "out" — Ken Burns direction (stills only)
+
+
+def _overlays_filter(spec: OutputSpec, hook: str | None) -> str:
+    """drawtext pieces appended after dimensioning: optional @handle watermark + opening hook."""
     font = _font_file()
     fontarg = f"fontfile='{_esc_font(font)}':" if font else ""
-
-    chain = [
-        f"scale={spec.width}:{spec.height}:force_original_aspect_ratio=decrease",
-        f"pad={spec.width}:{spec.height}:(ow-iw)/2:(oh-ih)/2:color={pad_color}",
-        f"fps={spec.fps}",
-        "setsar=1",
-    ]
-    # Watermark — bottom-center, boxed for legibility, clear of the product area.
-    wm = (
-        f"drawtext={fontarg}text='{_esc_text(spec.watermark_text)}':"
-        f"fontcolor=white:fontsize=h/28:x=(w-text_w)/2:y=h-text_h-h/40:"
-        f"box=1:boxcolor=black@0.45:boxborderw=10"
-    )
-    chain.append(wm)
-    # Callout supers — top band, time-gated.
-    for c in callouts:
-        chain.append(
-            f"drawtext={fontarg}text='{_esc_text(c.text)}':"
-            f"fontcolor=white:fontsize=h/22:x=(w-text_w)/2:y=h/12:"
-            f"box=1:boxcolor=black@0.35:boxborderw=12:"
-            f"enable='between(t,{c.start_s},{c.end_s})'"
+    pieces: list[str] = []
+    if spec.watermark_text:
+        pieces.append(
+            f"drawtext={fontarg}text='{_esc_text(spec.watermark_text)}':"
+            f"fontcolor=white@0.85:fontsize=h/34:x=(w-text_w)/2:y=h-text_h-h/40:"
+            f"shadowcolor=black@0.5:shadowx=2:shadowy=2"
         )
-    return ",".join(chain)
+    if hook:
+        pieces.append(
+            f"drawtext={fontarg}text='{_esc_text(hook)}':"
+            f"fontcolor=white:fontsize=h/22:x=(w-text_w)/2:y=h/8:"
+            f"box=1:boxcolor=black@0.4:boxborderw=16:enable='between(t,0.3,2.8)'"
+        )
+    return ",".join(pieces)
 
 
-def finish(
-    input_path: str | Path,
+def _dimension_chain(spec: OutputSpec, pad_color: str) -> str:
+    return (f"scale={spec.width}:{spec.height}:force_original_aspect_ratio=decrease,"
+            f"pad={spec.width}:{spec.height}:(ow-iw)/2:(oh-ih)/2:color={pad_color},"
+            f"fps={spec.fps},setsar=1,format=yuv420p")
+
+
+def ken_burns_clip(image_path: str | Path, out_path: str | Path, *, duration_s: float,
+                   spec: OutputSpec, zoom: str = "in", pad_color: str = "black") -> bool:
+    """Animate a still with a slow pan/zoom (free motion). Oversamples first so zoompan doesn't
+    jitter, then renders to exact spec dims."""
+    fps = spec.fps
+    frames = max(int(round(duration_s * fps)), 1)
+    ow, oh = spec.width * 2, spec.height * 2          # oversample to keep the zoom smooth
+    if zoom == "out":
+        zexpr = "if(eq(on,0),1.18,max(zoom-0.0012,1.0))"
+    else:
+        zexpr = "min(zoom+0.0012,1.18)"
+    vf = (
+        f"scale={ow}:{oh}:force_original_aspect_ratio=increase,crop={ow}:{oh},"
+        f"zoompan=z='{zexpr}':d={frames}:fps={fps}:"
+        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={spec.width}x{spec.height},"
+        f"pad={spec.width}:{spec.height}:(ow-iw)/2:(oh-ih)/2:color={pad_color},"
+        f"setsar=1,format=yuv420p"
+    )
+    cmd = [FFMPEG, "-y", "-loop", "1", "-i", str(image_path), "-t", f"{duration_s}",
+           "-vf", vf, "-r", str(fps), "-c:v", spec.video_codec, "-pix_fmt", "yuv420p",
+           "-an", str(out_path)]
+    return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+
+
+def normalize_video_shot(clip_path: str | Path, out_path: str | Path, *, duration_s: float,
+                         spec: OutputSpec, pad_color: str = "black") -> bool:
+    """Trim a generated video clip to the shot duration and conform it to spec dims/fps."""
+    cmd = [FFMPEG, "-y", "-i", str(clip_path), "-t", f"{duration_s}",
+           "-vf", _dimension_chain(spec, pad_color), "-r", str(spec.fps),
+           "-c:v", spec.video_codec, "-pix_fmt", "yuv420p", "-an", str(out_path)]
+    return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+
+
+def assemble(
+    shots: list[ShotMedia],
     output_path: str | Path,
     *,
     spec: OutputSpec | None = None,
-    callouts: list[Callout] | None = None,
     music_path: str | Path | None = None,
-    pad_color: str = "white",
+    hook: str | None = None,
+    pad_color: str = "black",
 ) -> FinishResult:
-    """Finish a generated clip into a spec-compliant deliverable. Deterministic; no model call."""
+    """Assemble per-shot media into one finished post. Deterministic; no model call."""
     spec = spec or get_spec()
-    callouts = callouts or []
-    input_path, output_path = Path(input_path), Path(output_path)
+    output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not shots:
+        return FinishResult(success=False, error="no shots to assemble")
 
-    if not input_path.is_file():
-        return FinishResult(success=False, error=f"input not found: {input_path}")
-
-    src = _summary(input_path)
-    # Duration: clamp into the band. We can trim down; we cannot invent footage, so a too-short
-    # source is a compliance violation surfaced to QC, not silently stretched.
-    out_duration = min(src["duration_s"], spec.max_duration_s)
-    out_duration = max(out_duration, 0.1)
-
-    # Two-pass target bitrate to land mid-band.
-    target_bits = spec.target_size_mb * 8 * 1024 * 1024
-    audio_bits = (spec.audio_bitrate_kbps * 1000) * (1 if music_path else 0)
-    video_bitrate_kbps = max(int(((target_bits / out_duration) - audio_bits) / 1000), 200)
-
-    vf = _video_filter(spec, callouts, pad_color)
+    missing = [s.media_path for s in shots if not Path(s.media_path).is_file()]
+    if missing:
+        return FinishResult(success=False, error=f"missing shot media: {missing[:3]}")
 
     with tempfile.TemporaryDirectory() as td:
-        passlog = str(Path(td) / "ffpass")
-        common = [FFMPEG, "-y", "-i", str(input_path)]
-        if music_path:
-            common += ["-i", str(music_path)]
+        # 1) Normalize each shot to identical spec params so they concat cleanly.
+        parts: list[str] = []
+        for i, sh in enumerate(shots):
+            part = str(Path(td) / f"shot_{i:03d}.mp4")
+            ok = (ken_burns_clip(sh.media_path, part, duration_s=sh.duration_s, spec=spec,
+                                 zoom=sh.zoom, pad_color=pad_color)
+                  if sh.render_mode == "kenburns"
+                  else normalize_video_shot(sh.media_path, part, duration_s=sh.duration_s,
+                                            spec=spec, pad_color=pad_color))
+            if not ok or not Path(part).is_file():
+                return FinishResult(success=False, error=f"failed to normalize shot {i} ({sh.render_mode})")
+            parts.append(part)
 
-        # Pass 1 — analyze (no audio, no output file).
-        p1 = subprocess.run(
-            [FFMPEG, "-y", "-i", str(input_path), "-t", f"{out_duration}",
-             "-vf", vf, "-c:v", spec.video_codec, "-b:v", f"{video_bitrate_kbps}k",
-             "-pass", "1", "-passlogfile", passlog, "-an", "-f", "null",
-             os.devnull],
-            capture_output=True, text=True,
-        )
-        if p1.returncode != 0:
-            return FinishResult(success=False, error=f"ffmpeg pass 1 failed: {p1.stderr[-800:]}")
+        overlays = _overlays_filter(spec, hook)
 
-        # Pass 2 — encode.
-        cmd2 = common + ["-t", f"{out_duration}", "-vf", vf,
-                         "-c:v", spec.video_codec, "-b:v", f"{video_bitrate_kbps}k",
-                         "-pass", "2", "-passlogfile", passlog, "-pix_fmt", "yuv420p"]
+        # 2) Concat (filter_complex, robust across identical inputs) + overlays + music, encode to spec.
+        cmd = [FFMPEG, "-y"]
+        for p in parts:
+            cmd += ["-i", p]
         if music_path:
-            cmd2 += ["-c:a", spec.audio_codec, "-b:a", f"{spec.audio_bitrate_kbps}k",
-                     "-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+            cmd += ["-i", str(music_path)]
+
+        concat_inputs = "".join(f"[{i}:v]" for i in range(len(parts)))
+        filtergraph = f"{concat_inputs}concat=n={len(parts)}:v=1:a=0[cat]"
+        if overlays:
+            filtergraph += f";[cat]{overlays}[v]"
+            vlabel = "[v]"
         else:
-            cmd2 += ["-an"]
-        cmd2 += [str(output_path)]
-        p2 = subprocess.run(cmd2, capture_output=True, text=True)
-        if p2.returncode != 0:
-            return FinishResult(success=False, error=f"ffmpeg pass 2 failed: {p2.stderr[-800:]}")
+            vlabel = "[cat]"
+
+        cmd += ["-filter_complex", filtergraph, "-map", vlabel,
+                "-c:v", spec.video_codec, "-b:v", f"{spec.video_bitrate_kbps}k",
+                "-pix_fmt", "yuv420p", "-r", str(spec.fps)]
+        if music_path:
+            mi = len(parts)
+            cmd += ["-map", f"{mi}:a:0", "-c:a", spec.audio_codec,
+                    "-b:a", f"{spec.audio_bitrate_kbps}k", "-shortest"]
+        else:
+            cmd += ["-an"]
+        cmd += [str(output_path)]
+
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            return FinishResult(success=False, error=f"assembly failed: {res.stderr[-800:]}")
 
     out = _summary(output_path)
     violations = validate(out, spec)
-    return FinishResult(
-        success=True,
-        output_path=str(output_path),
-        probe=out,
-        compliant=not violations,
-        violations=violations,
-    )
+    return FinishResult(success=True, output_path=str(output_path), probe=out,
+                        compliant=not violations, violations=violations)
 
 
 def validate(summary: dict, spec: OutputSpec) -> list[str]:
-    """Auto-checkable SOW parameters: dims, duration band, size band, watermark presence (by encode)."""
+    """Auto-checkable delivery parameters: exact dimensions and duration within the platform band."""
     v: list[str] = []
     if summary.get("width") != spec.width or summary.get("height") != spec.height:
         v.append(f"dimensions {summary.get('width')}x{summary.get('height')} != {spec.width}x{spec.height}")
     d = summary.get("duration_s", 0)
     if not (spec.min_duration_s - 0.5 <= d <= spec.max_duration_s + 0.5):
         v.append(f"duration {d}s outside [{spec.min_duration_s}, {spec.max_duration_s}]")
-    s = summary.get("size_mb", 0)
-    if s > spec.max_size_mb + 0.5:
-        v.append(f"size {s}MB exceeds max {spec.max_size_mb}MB")
     return v

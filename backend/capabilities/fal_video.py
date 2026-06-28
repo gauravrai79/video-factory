@@ -1,11 +1,14 @@
-"""fal.ai image-to-video clients — Kling (default) and Seedance (hero-SKU fallback).
+"""fal.ai image-to-video client — animates a generated still into a moving shot.
 
-Harvested from OpenMontage tools/video/kling_video.py and seedance_video.py: the queue-submit +
-poll + download logic, lifted out of the BaseTool framework into plain clients. Aggregator-routed so
-the model is a config string, never a hard-coded vendor dependency.
+Only the cheap, high-value models: Wan 2.5 ($0.05/s @480p, the default) and Kling 2.5 Turbo Pro
+($0.07/s). Seedance was dropped as too expensive. A shot's base still (from fal_image) is animated
+here only when the storyboard marks the shot `render_mode=video`; still+Ken Burns shots never reach
+this module.
 
-Generation runs **audio off** by design — music is added deterministically in finishing (cheaper and
-more controllable, per the SOW finishing strategy).
+Generation runs **audio off** — music is added deterministically in finishing.
+
+This module also hosts the shared fal queue infra (_poll_fal/_download/_fal_key/GenResult) that
+fal_image reuses, so there is a single fal integration.
 """
 
 from __future__ import annotations
@@ -17,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+from . import pricing
 
 
 class GenerationError(RuntimeError):
@@ -42,18 +47,17 @@ def _fal_key() -> str | None:
 
 
 def _simulated_failure(model: str) -> str | None:
-    """Test hook: VF_SIMULATE_GEN_FAILURE=kling[,seedance] forces the named model(s) to fail,
-    so the retry/fallback path is exercisable in a dry run with no paid call. Empty in prod."""
+    """Test hook: VF_SIMULATE_GEN_FAILURE=wan-2.5[,...] forces the named model(s) to fail, so the
+    retry/fallback path is exercisable in a dry run with no paid call. Empty in prod."""
     names = {n.strip().lower() for n in os.environ.get("VF_SIMULATE_GEN_FAILURE", "").split(",") if n.strip()}
-    if model in names:
+    if model.lower() in names:
         return f"simulated failure for {model} (VF_SIMULATE_GEN_FAILURE)"
     return None
 
 
 def _poll_fal(model_path: str, payload: dict[str, Any], *, base: str, poll_s: int = 5,
               timeout_s: int = 600) -> tuple[dict[str, Any], str | None]:
-    """Submit to the fal queue API and poll to completion. Returns (result JSON, request_id).
-    The request_id is what reconciles a job against a line in the fal usage dashboard."""
+    """Submit to the fal queue API and poll to completion. Returns (result JSON, request_id)."""
     key = _fal_key()
     if not key:
         raise GenerationError("FAL_KEY not set. Get one at https://fal.ai/dashboard/keys")
@@ -90,147 +94,82 @@ def _download(url: str, output_path: Path) -> None:
     output_path.write_bytes(r.content)
 
 
-# --------------------------------------------------------------------------- Kling (default)
+def image_ref(path_or_url: str) -> str:
+    """Resolve an image input fal can consume. http(s) URLs pass through; a local file (our v1
+    storage) is inlined as a base64 data URI (fal accepts data URIs for image inputs)."""
+    if path_or_url.startswith(("http://", "https://", "data:")):
+        return path_or_url
+    import base64
+    import mimetypes
+    p = Path(path_or_url)
+    mime = mimetypes.guess_type(p.name)[0] or "image/png"
+    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
 
-# fal Kling 2.1 image-to-video pricing = base price for the first 5s + a per-additional-second rate.
-# Verified from fal.ai/models/fal-ai/kling-video/v2.1/<tier>/image-to-video (2026-06):
-#   standard: $0.28 / 5s + $0.056/s   |   pro: $0.49 / 5s + $0.098/s
-# Master is unverified (not used by routing); update before enabling it.
-KLING_PRICING = {            # tier -> (base_first_5s_usd, per_additional_second_usd)
-    "standard": (0.28, 0.056),
-    "pro": (0.49, 0.098),
-    "master": (0.98, 0.196),  # ESTIMATE — verify against fal before routing to master
+
+# --------------------------------------------------------------------------- image-to-video
+
+# model key -> (endpoint under the fal base, fal base url)
+_VIDEO_ENDPOINTS = {
+    "wan-2.5": ("fal-ai/wan-25-preview/image-to-video", "https://queue.fal.run"),
+    "kling-2.5-turbo": ("fal-ai/kling-video/v2.5-turbo/pro/image-to-video", "https://queue.fal.run"),
 }
 
-# fal's Kling image-to-video accepts only these discrete values; anything else -> 422.
-_KLING_DURATIONS = ("5", "10")
-_KLING_ASPECTS = {"16:9": 16 / 9, "1:1": 1.0, "9:16": 9 / 16}
+# These models accept discrete durations; snap to the nearest allowed value (finishing trims).
+_ALLOWED_DURATIONS = ("5", "10")
 
 
-def _kling_duration(duration: str | int) -> str:
-    """Snap the requested duration to Kling's allowed set (5 or 10s). Finishing clamps into the
-    spec band afterward; 10s covers the 10-12s SOW window."""
-    return "10" if int(duration) >= 8 else "5"
+def _snap_duration(duration_s: float) -> str:
+    return "10" if float(duration_s) >= 8 else "5"
 
 
-def _kling_aspect(aspect_ratio: str) -> str:
-    """Map an arbitrary W:H (e.g. the spec's 4:3) to the nearest aspect Kling supports. Finishing
-    scales + pads to the exact spec dimensions, so the generator only needs a valid frame."""
-    try:
-        w, h = (float(x) for x in aspect_ratio.split(":"))
-        target = w / h
-    except (ValueError, ZeroDivisionError):
-        return "1:1"
-    return min(_KLING_ASPECTS, key=lambda k: abs(_KLING_ASPECTS[k] - target))
+def default_resolution() -> str:
+    """480p is cheapest; override with VF_VIDEO_RESOLUTION=720p|1080p for crisper (pricier) motion."""
+    return os.environ.get("VF_VIDEO_RESOLUTION", "480p")
 
 
-def _kling_tier(model_variant: str) -> str:
-    v = (model_variant or "").lower()
-    if "master" in v:
-        return "master"
-    if "standard" in v:
-        return "standard"
-    return "pro"
+def video_billed_cost(model: str, duration_s: float) -> float:
+    """Real cost on the BILLED (snapped) duration, so the estimate matches what fal charges."""
+    return pricing.video_cost(model, int(_snap_duration(duration_s)))
 
 
-def kling_cost(model_variant: str, duration_s: int) -> float:
-    """Real fal cost = base (first 5s) + per-second after, priced on the BILLED duration (we clamp
-    every call to 5 or 10s), so the estimate matches what fal actually charges."""
-    base, per_sec = KLING_PRICING[_kling_tier(model_variant)]
-    billed_s = int(_kling_duration(duration_s))   # 5 or 10 — matches the clamp applied to the call
-    return round(base + per_sec * (billed_s - 5), 4)
-
-
-def generate_kling(
+def generate_video(
     *,
     prompt: str,
     image_url: str,
     output_path: str,
-    model_variant: str = "v2.1/standard",   # volume default tier; pin the SKU default here
-    duration: str = "10",
-    aspect_ratio: str = "4:3",
+    model: str = pricing.DEFAULT_VIDEO_MODEL,
+    duration_s: float = 5.0,
+    aspect_ratio: str = "9:16",
+    resolution: str | None = None,
     execute: bool = False,
 ) -> GenResult:
-    """Image-to-video via Kling on fal.ai. With execute=False returns a priced dry-run."""
-    model_path = f"kling-video/{model_variant}/image-to-video"
-    est = kling_cost(model_variant, int(duration))
-    sim = _simulated_failure("kling")
+    """Image-to-video on fal. execute=False returns a priced dry-run. The image_url is the shot's
+    generated still (the character is already locked in it)."""
+    endpoint, base = _VIDEO_ENDPOINTS.get(model, _VIDEO_ENDPOINTS[pricing.DEFAULT_VIDEO_MODEL])
+    billed = _snap_duration(duration_s)
+    est = video_billed_cost(model, duration_s)
+
+    sim = _simulated_failure(model)
     if sim:
-        return GenResult(success=False, provider="kling", model=f"fal-ai/{model_path}", error=sim)
+        return GenResult(success=False, provider="fal-video", model=endpoint, error=sim)
     if not execute:
-        return GenResult(success=True, provider="kling", model=f"fal-ai/{model_path}",
-                         cost_usd=est, raw={"dry_run": True, "image_url": image_url})
+        return GenResult(success=True, provider="fal-video", model=endpoint, cost_usd=est,
+                         raw={"dry_run": True, "image_url": image_url, "billed_s": billed})
 
     start = time.time()
-    payload = {"prompt": prompt, "duration": _kling_duration(duration),
-               "aspect_ratio": _kling_aspect(aspect_ratio), "image_url": image_url}
+    payload: dict[str, Any] = {
+        "prompt": prompt, "image_url": image_url, "duration": billed,
+        "resolution": resolution or default_resolution(), "enable_prompt_expansion": False,
+    }
+    # model_path passed to _poll_fal is the endpoint after the base host.
+    model_path = endpoint
     try:
-        data, request_id = _poll_fal(model_path, payload, base="https://queue.fal.run/fal-ai")
+        data, request_id = _poll_fal(model_path, payload, base=base)
         _download(data["video"]["url"], Path(output_path))
     except (requests.RequestException, GenerationError, KeyError) as e:
-        return GenResult(success=False, provider="kling", model=f"fal-ai/{model_path}",
-                         error=f"Kling generation failed: {e}")
-    return GenResult(success=True, provider="kling", model=f"fal-ai/{model_path}",
-                     output_path=output_path, cost_usd=est, request_id=request_id,
-                     duration_seconds=round(time.time() - start, 2), raw=data)
-
-
-# --------------------------------------------------------------------------- Seedance (hero fallback)
-
-SEEDANCE_RATE_USD_PER_S = {"standard": 0.3034, "fast": 0.2419}
-
-
-def seedance_cost(model_variant: str, duration_s: int) -> float:
-    rate = SEEDANCE_RATE_USD_PER_S.get(model_variant, SEEDANCE_RATE_USD_PER_S["standard"])
-    return round(rate * duration_s, 4)
-
-
-def generate_seedance(
-    *,
-    prompt: str,
-    output_path: str,
-    image_url: str | None = None,
-    reference_image_urls: list[str] | None = None,   # up to 9 — garment fidelity from seller angles
-    model_variant: str = "standard",
-    duration: str = "10",
-    aspect_ratio: str = "4:3",
-    resolution: str = "720p",
-    seed: int | None = None,
-    execute: bool = False,
-) -> GenResult:
-    """Seedance 2.0 image/reference-to-video on fal.ai. Reserve for hero SKUs / difficult prints."""
-    refs = list(reference_image_urls or [])
-    if len(refs) > 9:
-        return GenResult(success=False, provider="seedance", model="seedance-2.0",
-                         error=f"Seedance accepts at most 9 reference images; got {len(refs)}")
-    operation = "reference-to-video" if refs else "image-to-video"
-    model_path = (f"bytedance/seedance-2.0/fast/{operation}" if model_variant == "fast"
-                  else f"bytedance/seedance-2.0/{operation}")
-    est = seedance_cost(model_variant, int(duration))
-    sim = _simulated_failure("seedance")
-    if sim:
-        return GenResult(success=False, provider="seedance", model=model_path, error=sim)
-    if not execute:
-        return GenResult(success=True, provider="seedance", model=model_path, cost_usd=est,
-                         raw={"dry_run": True, "operation": operation, "refs": len(refs)})
-
-    start = time.time()
-    payload: dict[str, Any] = {"prompt": prompt, "duration": duration,
-                               "aspect_ratio": aspect_ratio, "resolution": resolution,
-                               "generate_audio": False}
-    if seed is not None:
-        payload["seed"] = seed
-    if refs:
-        payload["reference_image_urls"] = refs
-    elif image_url:
-        payload["image_url"] = image_url
-    try:
-        data, request_id = _poll_fal(model_path, payload, base="https://queue.fal.run")
-        _download(data["video"]["url"], Path(output_path))
-    except (requests.RequestException, GenerationError, KeyError) as e:
-        return GenResult(success=False, provider="seedance", model=model_path,
-                         error=f"Seedance generation failed: {e}")
-    return GenResult(success=True, provider="seedance", model=model_path, output_path=output_path,
+        return GenResult(success=False, provider="fal-video", model=endpoint,
+                         error=f"video generation failed: {e}")
+    return GenResult(success=True, provider="fal-video", model=endpoint, output_path=output_path,
                      cost_usd=est, request_id=request_id,
-                     duration_seconds=round(time.time() - start, 2),
-                     seed=data.get("seed"), raw=data)
+                     duration_seconds=round(time.time() - start, 2), raw=data)

@@ -1,1 +1,1 @@
-"""Video Factory backend — state machine, capabilities, finishing, agents."""
+"""AI Influencer Factory backend — state machine, capabilities, finishing, agents."""

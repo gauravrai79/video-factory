@@ -1,172 +1,136 @@
-# Video Factory
+# AI Influencer Factory
 
-High-throughput **image-to-video** automation for ecommerce catalogs (Flipkart Lifestyle/Apparel
-engagement; multi-tenant by design). Turns a CSV of product SKUs into spec-compliant, watermarked,
-QC-gated short videos at **20,000+/month**.
+A high-throughput media production system for **AI personalities**. Each character is a persistent,
+visually-consistent persona; the factory turns a character + a content brief into a complete,
+auto-assembled short-form post (reel / short / square), at scale, with minimal human intervention.
 
-> This is a **batch orchestration project, not an ML project**. The generative step is a single API
-> call behind a stable interface; the engineering is the pipeline around it — ingestion, a queue with
-> SLA timers, deterministic finishing, a QC gate, and delivery.
+> This is an **orchestration project, not an ML project**. Generation is a set of API calls behind a
+> stable interface; the engineering is everything around it — character consistency, story planning,
+> a cost-aware still/video mix, deterministic assembly, a queue with SLA timers, identity QC, and an
+> auditable state machine.
 
----
-
-## How this fits BGO Spine
-
-This repo is a **self-contained Spine project**. It runs standalone today and is built to plug into
-the Spine control/governance plane in production with **no code change** — exactly the `synced`
-project model in Spine's `ACCESS_AND_ARCHITECTURE` §15.
-
-It couples to Spine through the documented four touchpoints only (no shared code):
-
-| Spine touchpoint | This repo |
-|---|---|
-| `spine.skills.json` (registry + connector block) | [`spine/spine.skills.json`](spine/spine.skills.json) |
-| AOP (governed run procedure) | [`spine/aop/video_factory.yaml`](spine/aop/video_factory.yaml) |
-| Connector → project API | `backend/` FastAPI app (the connector calls these endpoints) |
-| `launchUrl` → product UI | `frontend/` ops + QC console |
-
-**Governance reuse — the key win.** The factory inherits Spine's hardest-to-build parts instead of
-re-implementing them:
-
-| Factory need (from the SOW) | Spine primitive that *is* this |
-|---|---|
-| QC human gate (reviewer clears/rejects → rework loop) | **Approval gate** — writes go `pending → approve → execute` |
-| Auto-QC posture (auto-pass clean, human only on flagged) | Auto-checks auto-approve; flagged → Spine **Approvals queue** |
-| Per-video audit / compliance trail | **Hash-chained audit bus** (mirrored locally in `JobEvent`) |
-| Multi-client isolation | **`(tenant_id, project)` scoping + Postgres RLS** |
-| Governed access to fal.ai / Replicate / Drive | **Connector allow-list** |
-| Promote a better prompt/model strategy after measuring reshoot rate | **Skill lifecycle Draft → … → Production, eval-gated** |
-| Ops auth, Cognito later | Spine auth (`SPINE_AUTH_ENABLED` flip) |
-
-Until plugged into Spine, the same seams run locally: the deterministic finishing/throughput lives in
-this project's worker; the *decisions and writes* (generate-approve, deliver-approve) are modeled to
-route through Spine's approval + audit in production.
+The repo began as an ecommerce product-video pipeline and was repurposed: the hard infrastructure
+(queue, workers, retries, cost ceiling, SLA, hash-chained audit, FFmpeg finishing, VLM QC) is reused
+almost unchanged; only the content layer is new.
 
 ---
+
+## The core idea
+
+```
+Product → Prompt → Video            (old)
+Character → Storyboard → Post       (new)
+```
+
+The primary entity is a **Character**. A storyboard planner expands a brief into an ordered shot
+list, and the **cost lever** is per-shot: most shots are a generated still animated by **free FFmpeg
+Ken Burns** motion; only a small budget of "hero" shots spend on paid image-to-video. A 6-shot reel
+typically costs **~$0.50–1.00** instead of $3–4 of all-video generation.
+
+```
+Character (persona + reference images = "DNA")
+   → Storyboard planner (brief + scene templates → shot list, each tagged still | kenburns | video)
+      → per shot:  still (Nano Banana, identity-locked)  ──┬─ kenburns → free FFmpeg pan/zoom
+                                                           └─ video    → Wan 2.5 / Kling 2.5 Turbo
+         → Assemble (stitch shots, music, optional hook/handle) → identity QC → delivered reel
+```
+
+## Models (fal.ai)
+
+| Job | Model | Cost |
+|---|---|---|
+| Character-consistent still | **Nano Banana 2** (up to 5 people consistent, no fine-tune) | ~$0.10 / image |
+| Cheapest HD video | **Wan 2.5** (480p, default) | $0.05 / s |
+| Higher-quality video | **Kling 2.5 Turbo Pro** | $0.07 / s |
+| Ken Burns motion on a still | **FFmpeg `zoompan`** | $0.00 |
+
+Single fal integration; models are config strings (`backend/capabilities/pricing.py`). Glamour/suggestive
+personas use fal's `safety_tolerance` (1–6) per character. **Synthetic personas only — never a real
+person's likeness.** Seedance is intentionally excluded (too expensive).
 
 ## Architecture
 
 ```
-Spine (control/governance plane — reused in prod)
-   AOP run → guardrails → connector allow-list → APPROVAL GATE (=QC) → hash-chained audit
-        │  governs decisions + writes
-        ▼
-Video Factory project (this repo)
-   ├─ backend/
-   │   ├─ api.py          FastAPI: ops + QC console API (ingest · jobs · qc · media · summary)
-   │   ├─ pipeline.py     per-job state machine + retries + model fallback
-   │   │                  pending → generating → finishing → qc → approved/rework → delivered
-   │   ├─ jobqueue/       pluggable queue: in-process `sync` (default) | Redis/RQ (prod, opt-in)
-   │   ├─ jobstore.py     SQLite today (Postgres-shaped) · hash-chained audit · idempotency
-   │   ├─ sla.py          tier-based SLA timers · breach detection from the audit log
-   │   ├─ finishing.py    deterministic FFmpeg: dims · 2-pass size · clamp · watermark · supers · music
-   │   ├─ capabilities/   harvested from OpenMontage: fal.ai Kling/Seedance clients · cost model
-   │   └─ agents/         Prompt-Builder (deterministic; optional Gemini/ADK refine) ·
-   │                      QC-flagger (VLM visual QC via fal vision)      [Rework agent: planned]
-   └─ frontend/           zero-build ops console: CSV ingest · spec picker · dashboard · QC gate · player
+backend/
+  api.py            FastAPI: characters · storyboards · jobs · qc · media · scenes · summary
+  pipeline.py       per-post state machine: pending → generating (all shots) → finishing
+                    (assemble) → qc → approved/rework → delivered  · cost ceiling · retries
+  characters.py     Character entity + store (persona, reference images = "DNA", safety_tolerance)
+  scene_library.py  ~25 curated scene templates the planner sequences from
+  agents/
+    storyboard.py   brief + character + templates → priced shot list (still | kenburns | video)
+    prompt_builder.py  per-shot still/motion prompts (deterministic; optional Gemini refine)
+    qc_flagger.py   identity/anatomy QC via fal vision (advisory; reference-aware)
+  capabilities/
+    fal_image.py    character-consistent stills + reference-sheet minting
+    fal_video.py    image-to-video (Wan / Kling) + shared fal queue infra
+    pricing.py      central model price table
+    cost.py         per-post + content-calendar projections
+  finishing.py      deterministic FFmpeg: Ken Burns · normalize · stitch · music · overlays · encode
+  jobqueue/         pluggable queue: in-process `sync` (default) | Redis/RQ
+  jobstore.py       SQLite today (Postgres-shaped) · hash-chained audit · idempotency
+  sla.py            tier-based SLA timers, breaches derived from the audit log
+frontend/           zero-build console: characters · new post (preview/price) · dashboard · QC · player
 ```
 
-### Generation layer — aggregator, not direct vendor
-Routes through **fal.ai** (primary) with **Replicate** as secondary. One integration; swap models by
-changing a config string. This protects against vendor shutdowns (e.g. Sora's 2026 sunset) and lets
-you A/B models per SKU category.
+Every post is **idempotent** (re-running a brief reuses the job, never re-bills), **priority-ordered**
+(premium characters jump the queue), **SLA-timed**, protected by a **per-post cost ceiling**, and
+recorded in a **hash-chained audit log**. One failed video shot degrades gracefully to free Ken Burns
+rather than failing the whole post. If a character has no reference images, identity is **bootstrapped
+from the first generated still** so the rest of the post stays consistent.
 
-- **Default — Kling 2.1 Standard** (`VF_KLING_TIER`): the cost-smart volume tier — $0.56 per 10s clip
-  vs $0.98 for Pro (~43% cheaper, ~$8K/mo less at 20K). Failed tasks don't consume credits. Bump to
-  `pro` only if measured reshoot rate justifies it — generation cost dominates the P&L.
-- **Escalation for hero SKUs / difficult prints — Seedance 2.0**: up to 9 reference images for garment
-  fidelity (~$3.03 per 10s clip). Routed automatically; reserve the spend for SKUs that need it.
-
-### Finishing layer — deterministic, 100% automatable
-Everything the SOW mandates that isn't generative: enforce dimensions, two-pass encode into the
-selected spec's size band, clamp duration, burn the "Synthetically Generated" watermark, overlay
-callout supers, mux non-copyrighted music. **Generation runs audio-off; music is added here** —
-cheaper and more controllable. A **VLM visual QC** pass (Phase 4) then checks the finished clip for
-defects the deterministic checks can't see and routes flagged clips to the human gate.
-
----
-
-## Quick start (Phase-1 vertical slice — one SKU, no queue)
+## Quick start
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # add FAL_KEY (+ GOOGLE_API_KEY for the Prompt-Builder agent)
+cp .env.example .env          # add FAL_KEY for real generation
+# requires ffmpeg on PATH (or set FFMPEG_BIN / FFPROBE_BIN)
 
-# Dry run — builds prompt, prices the job, no paid API call:
-python scripts/run_one.py --csv samples/skus.csv --row 0
+# Plan + price one post (dry run, no paid calls):
+python scripts/run_one.py --character samples/luna.json --brief "beach day" --tags travel,glamour
 
-# Real generation (announces cost, calls fal.ai, finishes to spec):
-python scripts/run_one.py --csv samples/skus.csv --row 0 --execute
+# Real generation (stills + video + assembly → delivered reel):
+python scripts/run_one.py --character samples/luna.json --brief "beach day" --tags travel,glamour --execute
 ```
 
-The slice does: **CSV row → Prompt-Builder → Kling image-to-video (fal.ai) → deterministic FFmpeg
-finish → spec-compliant MP4 + hash-chained audit log.**
+`samples/luna.json` (glamour persona) and `samples/jango.json` (a dog — characters aren't only human)
+show the character schema. Provide real photos by setting `reference_images` to local paths, or let
+the factory mint a reference sheet from `dna_prompt`.
 
-## Batch orchestration (Phase-2 — CSV → queue → workers)
+## Content calendar (batch)
 
 ```bash
-# Dry run the whole CSV through the queue (no paid calls) and print the SLA view:
-python scripts/run_batch.py --csv samples/skus.csv --sla
+# Plan a week of posts for a character, dry run, with the SLA view:
+python scripts/run_batch.py --character samples/luna.json --posts 7 --tags travel,glamour --sla
 
-# Real generation across the batch (announces cost; needs FAL_KEY):
-python scripts/run_batch.py --csv samples/skus.csv --execute
+# Real generation across the batch:
+python scripts/run_batch.py --character samples/luna.json --posts 7 --tags travel,glamour --execute
 
-# Production fan-out: enqueue to Redis, drain with N parallel workers:
-VF_QUEUE_BACKEND=rq python scripts/run_batch.py --csv samples/skus.csv --enqueue-only
-VF_QUEUE_BACKEND=rq python scripts/worker.py      # run several of these
+# Production fan-out: enqueue to Redis, drain with N workers:
+VF_QUEUE_BACKEND=rq python scripts/run_batch.py --character samples/luna.json --posts 7 --enqueue-only
+VF_QUEUE_BACKEND=rq python scripts/worker.py
 ```
 
-**Queue is pluggable** (`VF_QUEUE_BACKEND`): `sync` (default, in-process, zero infra, Windows-safe)
-or `rq` (Redis, multi-worker, prod). One env var flips it — batch ingestion and the worker task are
-backend-agnostic. Each job is **idempotent** (re-ingesting a CSV reuses jobs, never re-bills),
-**priority-ordered** (premium/hero SKUs jump the queue), **SLA-timed** (tier-based enqueue→delivered
-budgets, breaches derived from the audit log), and protected by a **per-job cost ceiling**. Generation
-**retries and falls back** Kling↔Seedance per the AOP `on_failure: fallback_model` edge.
-
-## Ops + QC console (Phase-3 UI)
+## Console
 
 ```bash
-pip install -r requirements.txt   # adds fastapi + uvicorn
 python scripts/serve.py           # -> http://localhost:8310
 ```
 
-A local web console (FastAPI + a zero-build SPA in [`frontend/`](frontend/)) over the same pipeline:
-
-- **Ingest** a SKU CSV (drag the file in), pick dry-run vs **Execute (paid)**, pin a model, choose the
-  output **spec** (landscape / portrait), toggle the **human QC gate**, optionally finish a stand-in
-  clip — then jobs run on the background worker. Rows missing an `image_url` are flagged pre-flight.
-- **Dashboard** — live job table (state, model, dry/live cost, SLA bar, fallback marker) + headline
-  stats, auto-polling with a worker progress banner while the queue drains.
-- **Job drawer** — in-browser video player (seekable), spec-compliance probe, est/actual cost, the
-  **VLM QC verdict** with flagged issues, the fal request id, and the full **hash-chained audit trail**.
-- **QC review** — jobs flagged by VLM auto-QC (or the human gate) show **Approve → deliver** /
-  **Reject → rework** buttons.
-
-API endpoints mirror the AOP connector allow-list (`/api/ingest`, `/api/jobs`, `/api/jobs/{id}`,
-`/api/jobs/{id}/qc`, `/api/run`, `/api/media/...`). The sync backend drains in a background thread so
-the UI stays responsive during multi-minute generations; switch to `VF_QUEUE_BACKEND=rq` for real
-multi-worker fan-out.
-
-## Phased build (matches the feasibility plan)
-- **Phase 0** — spec lock (the 960×720/≤10 MB/10–12s vs 1080×1920/17 MB/13s contradiction; see
-  [`backend/spec.py`](backend/spec.py)). Both encoded as presets + a `portrait` (9:16) option;
-  default stays the written SOW until the client confirms. + fal.ai/credentials.
-- **Phase 1** — thin vertical slice (the `run_one.py` CLI). ✅
-- **Phase 2** — orchestration: pluggable queue (sync/RQ), state machine, retries, model fallback, SLA
-  timers, idempotency, priority, cost-ceiling guardrail, batch CSV ingestion → 20K/month. ✅
-- **Phase 3** — ops + QC web console (CSV upload, per-batch spec selector, batch dashboard, human QC
-  gate, in-browser video review). ✅
-- **Phase 4** — quality + cost: **VLM visual auto-QC** (defect flagging via fal vision → human gate),
-  accurate fal-matched cost model + Standard-tier default, fal request-id traceability. ✅
-  Still to come: cost dashboards, per-model quality tracking, Postgres/Railway + Google Drive delivery.
+Create characters, compose a post (preview the priced shot list before committing), watch posts run on
+the background worker, review the in-browser player + identity-QC verdict + hash-chained audit, and
+clear the human QC gate. The sync backend drains in a background thread so the UI stays responsive
+during multi-minute generations; switch to `VF_QUEUE_BACKEND=rq` for multi-worker fan-out.
 
 ## Status
-**Phases 1–4 runnable and verified against real fal.ai output.** Deterministic finishing, ingest, cost
-model, and the Prompt-Builder run with no keys. The orchestrator drives the full state machine
-(generate → finish → **VLM QC** → deliver) on the in-process queue with retries/fallback, idempotency,
-priority, SLA tracking, and a hash-chained audit per job. The web console (`scripts/serve.py`) drives
-all of it: CSV ingest, spec selection, live dashboard, in-browser review, and the QC gate. **Proven on
-live Flipkart SKUs** — product images turned into spec-compliant delivered clips (landscape **and**
-portrait), with VLM auto-QC correctly flagging a defective clip (artifact + face distortion) for review
-and passing a clean one. Generation cost matches the fal dashboard (Kling Standard $0.56/10s).
-RQ multi-worker fan-out is behind `VF_QUEUE_BACKEND=rq`; Postgres/Drive delivery remain next.
+
+**v1 — generation only — runnable and verified.** Character store, storyboard planner, cost-mixed
+still/video generation, FFmpeg Ken Burns + multi-shot assembly, identity QC, the full state machine
+(generate → assemble → QC → deliver), idempotency, priority, SLA, and per-post hash-chained audit all
+run; the deterministic parts (planning, assembly) verified end-to-end with real FFmpeg. Deployment
+target is **Railway** (long-running workers + FFmpeg + Postgres; **not** Vercel — wrong shape for this
+workload).
+
+**Next phases (not in v1):** caption/hashtag generation, auto-publishing (Instagram Graph API,
+YouTube), engagement analytics feeding back into planning, and per-character LoRA for the highest
+consistency tier.

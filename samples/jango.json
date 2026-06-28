@@ -1,0 +1,16 @@
+{
+  "name": "Jango",
+  "slug": "jango",
+  "species": "animal",
+  "dna_prompt": "a fluffy golden retriever puppy with a glossy coat and expressive brown eyes, photorealistic",
+  "safety_tolerance": 5,
+  "persona": {
+    "appearance": "a fluffy golden retriever puppy with a glossy golden coat",
+    "personality": "playful, curious, affectionate",
+    "niche": "cute pet daily life",
+    "environments": ["park", "home", "trails"]
+  },
+  "social_accounts": {"instagram": "@jango.example"},
+  "posting_schedule": {"reels_per_day": 2},
+  "_note": "Provide real photos by setting reference_images to local file paths; otherwise the look is minted from dna_prompt or bootstrapped from the first still."
+}
