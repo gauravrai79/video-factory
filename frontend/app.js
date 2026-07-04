@@ -326,9 +326,10 @@ function stagePanel(e) {
       <textarea id="style-note" rows="2" placeholder="e.g. warmer lighting; more cinematic wide shots; less saturated; softer film grain">${esc(e.style_note || "")}</textarea></label>`;
     // preview ready, not yet batched → approve the look or tweak the style note
     if (e.stage_status === "awaiting_review" && !e.refs_batch_done) {
-      const p = e.scenes[0] || {};
+      const p = e.scenes.find((s) => s.still_url) || e.scenes[0] || {};
       const pimg = p.still_url ? `<img class="preview-img" src="${p.still_url}?t=${Date.now()}"/>` : `<div class="ph-tile big">preview failed — regenerate</div>`;
       return `${err}<div class="section-title">Preview — approve the look before generating all ${e.scene_count} images</div>
+        <div class="preview-cap">Scene ${(p.seq ?? 0) + 1}: ${esc(p.heading || "")} · ${esc((p.cast_present || []).length ? "features cast" : "no cast")}</div>
         <div class="preview-wrap">${pimg}</div>
         ${styleBox}
         <div class="gate-row">

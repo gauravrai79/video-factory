@@ -10,8 +10,9 @@ from __future__ import annotations
 from ..channels import Channel
 from ..characters import Character
 
-_GUARD = ("Photorealistic, cinematic lighting, high detail, consistent character identity and "
-          "wardrobe. No on-screen text, captions, logos, or watermarks.")
+# Style-neutral guard (no "photorealistic" — that would override the channel's chosen art style).
+_GUARD = ("High detail, consistent character identity and wardrobe across scenes. "
+          "No on-screen text, captions, logos, or watermarks.")
 
 
 def scene_cast(scene: dict, cast_map: dict[str, Character]) -> list[Character]:
@@ -19,18 +20,20 @@ def scene_cast(scene: dict, cast_map: dict[str, Character]) -> list[Character]:
 
 
 def reference_still_prompt(scene: dict, present: list[Character], channel: Channel) -> tuple[str, list[str]]:
-    """Return (prompt, reference_image_paths). For a b-roll/no-cast scene it's an establishing shot."""
+    """Return (prompt, reference_image_paths). The channel art style leads the prompt and, when a
+    stylised style is set, the referenced characters are explicitly re-rendered in that style (so
+    photoreal reference photos still become e.g. 3D-comic characters)."""
     style = channel.art_style or "cinematic, photorealistic"
     heading = scene.get("heading", "")
     action = scene.get("action", "")
     camera = scene.get("camera", "")
     if present:
         who = "; ".join(c.look_descriptor() for c in present)
-        subject = who
+        subject = (f"Render {who} in a {style} art style — keep each character's identity from the "
+                   f"reference images but restyle them to fully match this art style")
     else:
-        subject = "atmospheric establishing shot, no people"
-    prompt = ". ".join(p for p in [
-        style, heading, subject, action, camera, _GUARD] if p)
+        subject = f"Atmospheric establishing shot, no characters, in a {style} art style"
+    prompt = ". ".join(p for p in [f"Art style: {style}", heading, subject, action, camera, _GUARD] if p)
     refs = [p for c in present for p in c.reference_images]
     return prompt, refs
 

@@ -294,16 +294,18 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
             return _fail(eps, ep, "approve a script before generating reference images")
         if style_note is not None:
             ep.style_note = style_note.strip()
-        # PREVIEW-FIRST: generate only scene 0 so you can approve the look (or tweak the style note)
-        # before spending on the whole batch.
+        # PREVIEW-FIRST: generate one representative still so you can approve the LOOK (style +
+        # character identity) before spending on the whole batch. Prefer the first scene that
+        # actually features the cast (so you see the character, not an empty establishing shot).
         cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
         out_dir = _out_dir(ep)
-        preview = ep.scenes[0]
+        pidx = next((i for i, s in enumerate(ep.scenes) if s.get("cast_present")), 0)
+        preview = ep.scenes[pidx]
         info, cost = _gen_scene_still(preview, cast_map, ch, out_dir, style_note=ep.style_note)
         preview["reference_image"] = info
-        # reset any later scenes (a fresh preview invalidates a prior batch)
-        for scene in ep.scenes[1:]:
-            scene["reference_image"] = {}
+        for i, scene in enumerate(ep.scenes):     # a fresh preview invalidates any prior batch
+            if i != pidx:
+                scene["reference_image"] = {}
         ep.refs_batch_done = False
         ep.spent_usd = round(ep.spent_usd + cost, 4)
         ep.stage_status = StageStatus.AWAITING_REVIEW.value
