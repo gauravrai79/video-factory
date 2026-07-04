@@ -257,3 +257,41 @@ main { display: block; }
 
 /* fix: the [hidden] attribute must win over .inline-form's display:flex */
 [hidden] { display: none !important; }
+
+/* ===== M2 episode workspace ===== */
+.ep-meta { font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+#drawer-body button:not(.ghost):not(.mini):not(.linklike):not(.close) {
+  background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; border: 0; padding: 9px 16px; border-radius: 9px; font-weight: 600;
+}
+#drawer-body button:disabled { opacity: .6; }
+.gate-row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.mini { font-size: 12px; padding: 5px 12px !important; border-radius: 7px !important; }
+.chosen { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px; margin: 8px 0; }
+.stage-next { margin-top: 14px; padding: 12px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); font-size: 13px; }
+
+/* idea cards */
+.idea-grid { display: grid; gap: 10px; }
+.idea-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.idea-title b { font-size: 14px; }
+.idea-log { font-size: 12.5px; margin: 4px 0; }
+.idea-hook { font-size: 12px; color: var(--muted); margin: 4px 0; }
+.idea-hook span { color: var(--cyan); text-transform: uppercase; font-size: 10px; margin-right: 4px; }
+.idea-beats { margin: 6px 0 8px; padding-left: 18px; font-size: 12px; color: var(--muted); }
+.idea-beats li { margin: 2px 0; }
+
+/* scene list */
+.scene-list { display: flex; flex-direction: column; gap: 8px; }
+.scene-row { display: flex; gap: 10px; background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; padding: 10px; }
+.scene-seq { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 6px; background: var(--bg); color: var(--muted); font-size: 12px; }
+.scene-body { min-width: 0; flex: 1; }
+.scene-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.scene-head b { font-size: 12.5px; }
+.scene-action { font-size: 12px; color: var(--text); margin: 3px 0; }
+.scene-vo { font-size: 12px; color: var(--cyan); margin: 3px 0; }
+.scene-line { font-size: 12px; margin: 2px 0; }
+.scene-line em { color: var(--muted); }
+.shot { font-size: 10px; padding: 1px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
+.shot-broll { background: #21313a; color: #7fd3d8; }
+.shot-still_kenburns { background: #1f2a3a; color: #8fb4e8; }
+.shot-lipsync_still { background: #2c2440; color: #b79cf0; }
+.shot-hero_video { background: #3a2a16; color: #f0a35e; }

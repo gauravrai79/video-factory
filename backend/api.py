@@ -23,11 +23,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import runner, sla as sla_mod
+from . import episode_pipeline, runner, sla as sla_mod
 from .agents.storyboard import plan_storyboard
 from .capabilities import fal_image, pricing
 from .channels import CAST_ROLES, FORMATS, ChannelStore
 from .characters import CharacterStore
+from .episode_pipeline import StageError
 from .episodes import STAGE_ORDER, EpisodeStore, Stage
 from .jobstore import JobStore, State
 from .pipeline import cost_ceiling_usd, create_job, qc_decision
@@ -336,6 +337,21 @@ def _episode_view(ep, channel_name: str = "") -> dict[str, Any]:
     return d
 
 
+def _episode_action(episode_id: str, fn) -> dict[str, Any]:
+    """Shared plumbing for stage actions: load episode, run fn(store, ep), return the view."""
+    store = JobStore()
+    ep_store, ch_store = EpisodeStore(store), ChannelStore(store)
+    ep = ep_store.get(episode_id)
+    if not ep:
+        raise HTTPException(404, "episode not found")
+    try:
+        ep = fn(store, ep)
+    except StageError as e:
+        raise HTTPException(409, str(e))
+    ch = ch_store.get(ep.channel_id)
+    return _episode_view(ep, ch.name if ch else "")
+
+
 @app.get("/api/episodes")
 def list_episodes(channel_id: str | None = None) -> list[dict[str, Any]]:
     store = JobStore()
@@ -368,6 +384,30 @@ def get_episode(episode_id: str) -> dict[str, Any]:
         raise HTTPException(404, "episode not found")
     ch = ch_store.get(ep.channel_id)
     return _episode_view(ep, ch.name if ch else "")
+
+
+@app.post("/api/episodes/{episode_id}/run")
+def run_stage(episode_id: str) -> dict[str, Any]:
+    """Generate the current stage's artifact (M2: ideate or script) → parks at awaiting_review."""
+    return _episode_action(episode_id, episode_pipeline.run_stage)
+
+
+@app.post("/api/episodes/{episode_id}/approve")
+def approve_stage(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Approve the current stage's artifact and advance. Body: {choice|idea} for idea, {scenes?} for script."""
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.approve_stage(s, e, payload=body or {}))
+
+
+@app.post("/api/episodes/{episode_id}/reject")
+def reject_stage(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.reject_stage(s, e, reason=str((body or {}).get("reason", ""))))
+
+
+@app.patch("/api/episodes/{episode_id}/artifact")
+def edit_artifact(episode_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Hand-edit the current artifact (idea or scenes) in place."""
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.edit_artifact(
+        s, e, idea=body.get("idea"), scenes=body.get("scenes")))
 
 
 # --------------------------------------------------------------------------- storyboards / posts

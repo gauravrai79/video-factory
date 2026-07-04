@@ -205,20 +205,92 @@ async function newEpisode(channelId) {
   try { await jpost("/api/episodes", { channel_id: channelId, title }); refreshEpisodes(); refreshSummary(); }
   catch (err) { alert("Error: " + err.message); }
 }
+let curEpisode = null;
 async function openEpisode(id) {
-  const e = await api(`/api/episodes/${id}`);
+  curEpisode = await api(`/api/episodes/${id}`);
+  renderEpisode();
+  $("#backdrop").hidden = false; $("#drawer").hidden = false;
+}
+
+const SHOT_LABEL = { broll: "b-roll", still_kenburns: "Ken Burns", lipsync_still: "lip-sync", hero_video: "hero video" };
+
+function ideaCard(idea, i, canApprove) {
+  const beats = (idea.beats || []).map((b) => `<li>${esc(b)}</li>`).join("");
+  return `<div class="idea-card">
+    <div class="idea-title"><b>${esc(idea.title || "Untitled")}</b></div>
+    <div class="idea-log">${esc(idea.logline || "")}</div>
+    ${idea.hook ? `<div class="idea-hook"><span>hook</span> ${esc(idea.hook)}</div>` : ""}
+    ${beats ? `<ul class="idea-beats">${beats}</ul>` : ""}
+    ${canApprove ? `<button class="mini" data-approve-idea="${curEpisode.episode_id}" data-choice="${i}">use this ✓</button>` : ""}
+  </div>`;
+}
+
+function sceneRow(s) {
+  const dlg = (s.dialogue || []).length ? `💬 ${s.dialogue.length}` : "";
+  return `<div class="scene-row">
+    <div class="scene-seq">${s.seq + 1}</div>
+    <div class="scene-body">
+      <div class="scene-head"><b>${esc(s.heading || "scene")}</b>
+        <span class="shot shot-${s.shot_type}">${SHOT_LABEL[s.shot_type] || s.shot_type}</span>
+        <small>${s.duration_s}s ${dlg}</small></div>
+      <div class="scene-action">${esc(s.action || "")}</div>
+      ${s.narration ? `<div class="scene-vo">🎙 ${esc(s.narration)}</div>` : ""}
+      ${(s.dialogue || []).map((d) => `<div class="scene-line"><b>${esc(nameOf(d.speaker))}</b>: ${esc(d.line)}${d.delivery ? ` <em>(${esc(d.delivery)})</em>` : ""}</div>`).join("")}
+    </div></div>`;
+}
+function nameOf(cid) { const c = characters.find((x) => x.character_id === cid); return c ? c.name : "?"; }
+
+function stagePanel(e) {
+  const busy = e.stage_status === "generating";
+  const err = e.stage_error ? `<div class="err-banner">${esc(e.stage_error)}</div>` : "";
+  // IDEA
+  if (e.stage === "idea") {
+    if (e.stage_status === "awaiting_review" && e.idea_candidates.length) {
+      return `${err}<div class="section-title">Pick an episode idea</div>
+        <div class="idea-grid">${e.idea_candidates.map((x, i) => ideaCard(x, i, true)).join("")}</div>
+        <div class="gate-row"><button class="ghost" data-run="${e.episode_id}">↻ regenerate ideas</button></div>`;
+    }
+    return `${err}<div class="section-title">Ideate</div>
+      <p class="muted">Generate episode concepts from the channel premise + cast personalities. Text only — near-free.</p>
+      <button data-run="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✨ Generate ideas"}</button>`;
+  }
+  // SCRIPT
+  if (e.stage === "script") {
+    const chosen = e.idea && e.idea.title ? `<div class="chosen">📌 <b>${esc(e.idea.title)}</b> — ${esc(e.idea.logline || "")}</div>` : "";
+    if (e.stage_status === "awaiting_review" && e.scenes.length) {
+      return `${err}${chosen}<div class="section-title">Script — ${e.scenes.length} scenes</div>
+        <div class="scene-list">${e.scenes.map(sceneRow).join("")}</div>
+        <div class="gate-row">
+          <button data-approve-script="${e.episode_id}">Approve script ✓</button>
+          <button class="ghost" data-run="${e.episode_id}">↻ rewrite</button>
+        </div>`;
+    }
+    return `${err}${chosen}<div class="section-title">Script</div>
+      <p class="muted">Expand the idea into a scene-by-scene script (dialogue, narration, shot types). Text only.</p>
+      <button data-run="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✍ Write script"}</button>`;
+  }
+  // beyond script (refs/scenes/audio/assembly/done)
+  const chosen = e.idea && e.idea.title ? `<div class="chosen">📌 <b>${esc(e.idea.title)}</b></div>` : "";
+  return `${err}${chosen}
+    ${e.scenes.length ? `<div class="section-title">Approved script — ${e.scenes.length} scenes</div>
+      <div class="scene-list">${e.scenes.map(sceneRow).join("")}</div>` : ""}
+    <div class="stage-next">▶ Next stage — <b>${esc(e.stage)}</b> — is wired in the next milestone.</div>`;
+}
+
+function renderEpisode() {
+  const e = curEpisode;
   $("#drawer-body").innerHTML = `
     <h2>${esc(e.title)}</h2>
-    <div class="fsn">${esc(e.channel_name)} · episode ${e.number}</div>
+    <div class="fsn">${esc(e.channel_name)} · episode ${e.number} · <small>${esc(e.stage)}/${esc(e.stage_status)}</small></div>
     ${stepper(e)}
-    <div class="kv">
-      <div class="k">Stage</div><div class="v">${esc(e.stage)} · ${esc(e.stage_status)}</div>
-      <div class="k">Cast</div><div class="v">${e.cast.length} actor(s)</div>
-      <div class="k">Scenes</div><div class="v">${e.scene_count}</div>
-      <div class="k">Est / spent</div><div class="v">~$${Number(e.est_cost_usd || 0).toFixed(2)} / $${Number(e.spent_usd || 0).toFixed(2)}</div>
-    </div>
-    <p class="muted">Production stages (Ideate → Script → Refs → Scenes → Audio → Assemble) are wired in the next milestones. This is the episode shell.</p>`;
-  $("#backdrop").hidden = false; $("#drawer").hidden = false;
+    <div class="ep-meta"><span>${e.cast.length} cast</span> · <span>${e.scene_count} scenes</span> · <span>writer ${esc(e.writer_model || "—")}</span> · <span>spent $${Number(e.spent_usd || 0).toFixed(3)}</span></div>
+    ${stagePanel(e)}
+    ${(e.history || []).length ? `<div class="section-title">History</div><div class="timeline">${e.history.slice().reverse().map((h) => `<div class="ev"><div class="name">${esc(h.event)}</div><div class="det">${esc(JSON.stringify(h.detail))}</div></div>`).join("")}</div>` : ""}`;
+}
+
+async function epAction(fn) {
+  try { curEpisode = await fn(); renderEpisode(); refreshEpisodes(); refreshSummary(); }
+  catch (err) { alert("Error: " + err.message); }
 }
 
 // ---------- events + polling ----------
@@ -232,6 +304,9 @@ document.addEventListener("click", (e) => {
   if (t.dataset.actor) return saveActor(t.dataset.actor);
   if (t.dataset.newEp) return newEpisode(t.dataset.newEp);
   if (t.dataset.episode) return openEpisode(t.dataset.episode);
+  if (t.dataset.run) { if (curEpisode) { curEpisode.stage_status = "generating"; renderEpisode(); } return epAction(() => jpost(`/api/episodes/${t.dataset.run}/run`, {})); }
+  if (t.dataset.approveIdea) return epAction(() => jpost(`/api/episodes/${t.dataset.approveIdea}/approve`, { choice: Number(t.dataset.choice) }));
+  if (t.dataset.approveScript) return epAction(() => jpost(`/api/episodes/${t.dataset.approveScript}/approve`, {}));
   if (t.dataset.epf) { epFilter = t.dataset.epf; renderEpFilters(); refreshEpisodes(); }
 });
 

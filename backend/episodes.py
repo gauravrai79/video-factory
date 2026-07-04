@@ -84,13 +84,21 @@ class Episode:
     stage: str = Stage.IDEA.value
     stage_status: str = StageStatus.PENDING.value
     idea: dict[str, Any] = field(default_factory=dict)      # approved concept
+    idea_candidates: list[dict[str, Any]] = field(default_factory=list)  # ideate output (choose one)
     cast: list[str] = field(default_factory=list)           # resolved character_ids
     scenes: list[dict[str, Any]] = field(default_factory=list)  # list of Scene dicts
     timeline: dict[str, Any] = field(default_factory=dict)  # the editable EDL (built at assembly)
+    history: list[dict[str, Any]] = field(default_factory=list)  # stage/gate action trail
+    stage_error: str = ""
+    writer_model: str = ""
     est_cost_usd: float = 0.0
     spent_usd: float = 0.0
     created_at: float = 0.0
     updated_at: float = 0.0
+
+    def log(self, event: str, detail: dict[str, Any] | None = None) -> None:
+        self.history.append({"event": event, "detail": detail or {},
+                             "stage": self.stage, "ts": time.time()})
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
