@@ -312,63 +312,10 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
         ep.log("refs_preview", {"status": info["status"], "cost_usd": round(cost, 4)})
 
     elif stage == Stage.SCENES:
-        if not ep.scenes or not all((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
-            return _fail(eps, ep, "generate + approve reference images first")
-        est = stage_estimate(ep)
-        if est > episode_ceiling_usd():
-            return _fail(eps, ep, f"est ${est} over episode ceiling ${episode_ceiling_usd()}")
-        cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
-        spec = channel_spec(ch)
-        out_dir = _out_dir(ep)
-        spent, failed = 0.0, 0
-        for scene in ep.scenes:
-            if scene.get("shot_type") == "hero_video":
-                info, cost = _gen_scene_clip(scene, cast_map, spec, out_dir)
-                scene["clip"] = info
-                spent += cost
-                failed += (info["status"] != "ok")
-            else:
-                scene["clip"] = {}          # still + Ken Burns at assembly
-        ok, err = _assemble_rough(ep, ch)
-        if not ok:
-            ep.spent_usd = round(ep.spent_usd + spent, 4)
-            return _fail(eps, ep, f"rough-cut assembly failed: {err}")
-        ep.spent_usd = round(ep.spent_usd + spent, 4)
-        ep.stage_status = StageStatus.AWAITING_REVIEW.value
-        ep.log("scenes", {"hero_videos": sum(1 for s in ep.scenes if s.get("shot_type") == "hero_video"),
-                          "failed": failed, "cost_usd": round(spent, 4)})
+        return generate_scenes(store, ep)
 
     elif stage == Stage.AUDIO:
-        if not ep.scenes or not all((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
-            return _fail(eps, ep, "generate + approve reference images and scenes first")
-        est = stage_estimate(ep)
-        if est > episode_ceiling_usd():
-            return _fail(eps, ep, f"est ${est} over episode ceiling ${episode_ceiling_usd()}")
-        cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
-        out_dir = _out_dir(ep)
-        spent = 0.0
-        for scene in ep.scenes:
-            vpath, vcost = _scene_voice(scene, cast_map, ch, out_dir)
-            spent += vcost
-            if scene.get("shot_type") == "lipsync_still" and vpath:
-                still = (scene.get("reference_image") or {}).get("path")
-                talk = str(out_dir / "talk" / f"{scene['seq']:03d}.mp4")
-                lr = lipsync_cap.lipsync(image_path=still, audio_path=vpath, output_path=talk)
-                spent += lr.cost_usd
-                scene["duration_s"] = round(lr.duration_s or scene.get("duration_s", 5), 2)
-                scene["audio"] = {"voice": vpath, "talk": (talk if lr.ok else None)}
-            else:
-                if vpath:
-                    scene["duration_s"] = round(max(scene.get("duration_s", 5), media_duration(vpath) + 0.4), 2)
-                scene["audio"] = {"voice": vpath}
-        ok, err, mcost = _assemble_audio_cut(ep, ch, regen_music=True)
-        spent += mcost
-        ep.spent_usd = round(ep.spent_usd + spent, 4)
-        if not ok:
-            return _fail(eps, ep, f"audio assembly failed: {err}")
-        ep.stage_status = StageStatus.AWAITING_REVIEW.value
-        ep.log("audio", {"cost_usd": round(spent, 4),
-                         "duration_s": (ep.timeline.get("probe") or {}).get("duration_s")})
+        return generate_audio(store, ep)
 
     elif stage == Stage.ASSEMBLY:
         audio_cut = (ep.timeline or {}).get("audio_cut")
@@ -451,10 +398,80 @@ def generate_refs_batch(store, ep: Episode, *, style_note: str | None = None) ->
         scene["reference_image"] = info
         spent += cost
         failed += (info["status"] != "ok")
+        ep.spent_usd = round(ep.spent_usd + cost, 4)
+        eps.update(ep)                       # persist per-image so a live poll sees the grid fill
     ep.refs_batch_done = True
-    ep.spent_usd = round(ep.spent_usd + spent, 4)
     ep.stage_status = StageStatus.AWAITING_REVIEW.value
     ep.log("refs_batch", {"generated": len(pending), "failed": failed, "cost_usd": round(spent, 4)})
+    return eps.update(ep)
+
+
+def generate_scenes(store, ep: Episode) -> Episode:
+    """Render the shot-type mix (hero videos + Ken Burns) into a silent rough cut. Persists per shot
+    so a live poll sees clips appear one by one."""
+    eps, chs, cs, ch, cast = _ctx(store, ep)
+    if not ep.scenes or not all((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
+        return _fail(eps, ep, "generate + approve reference images first")
+    est = stage_estimate(ep)
+    if est > episode_ceiling_usd():
+        return _fail(eps, ep, f"est ${est} over episode ceiling ${episode_ceiling_usd()}")
+    cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
+    spec = channel_spec(ch)
+    out_dir = _out_dir(ep)
+    spent, failed = 0.0, 0
+    for scene in ep.scenes:
+        if scene.get("shot_type") == "hero_video":
+            info, cost = _gen_scene_clip(scene, cast_map, spec, out_dir)
+            scene["clip"] = info
+            spent += cost
+            failed += (info["status"] != "ok")
+            ep.spent_usd = round(ep.spent_usd + cost, 4)
+        else:
+            scene["clip"] = {"status": "kenburns"}   # marks it "done" (free) for the live grid
+        eps.update(ep)
+    ok, err = _assemble_rough(ep, ch)
+    if not ok:
+        return _fail(eps, ep, f"rough-cut assembly failed: {err}")
+    ep.stage_status = StageStatus.AWAITING_REVIEW.value
+    ep.log("scenes", {"hero_videos": sum(1 for s in ep.scenes if s.get("shot_type") == "hero_video"),
+                      "failed": failed, "cost_usd": round(spent, 4)})
+    return eps.update(ep)
+
+
+def generate_audio(store, ep: Episode) -> Episode:
+    """Voices + lip-sync + music into a scored cut. Persists per scene for the live grid."""
+    eps, chs, cs, ch, cast = _ctx(store, ep)
+    if not ep.scenes or not all((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
+        return _fail(eps, ep, "generate + approve reference images and scenes first")
+    est = stage_estimate(ep)
+    if est > episode_ceiling_usd():
+        return _fail(eps, ep, f"est ${est} over episode ceiling ${episode_ceiling_usd()}")
+    cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
+    out_dir = _out_dir(ep)
+    spent = 0.0
+    for scene in ep.scenes:
+        vpath, vcost = _scene_voice(scene, cast_map, ch, out_dir)
+        spent += vcost
+        if scene.get("shot_type") == "lipsync_still" and vpath:
+            still = (scene.get("reference_image") or {}).get("path")
+            talk = str(out_dir / "talk" / f"{scene['seq']:03d}.mp4")
+            lr = lipsync_cap.lipsync(image_path=still, audio_path=vpath, output_path=talk)
+            spent += lr.cost_usd
+            scene["duration_s"] = round(lr.duration_s or scene.get("duration_s", 5), 2)
+            scene["audio"] = {"voice": vpath, "talk": (talk if lr.ok else None), "status": "ok"}
+        else:
+            if vpath:
+                scene["duration_s"] = round(max(scene.get("duration_s", 5), media_duration(vpath) + 0.4), 2)
+            scene["audio"] = {"voice": vpath, "status": "ok"}
+        ep.spent_usd = round(ep.spent_usd + vcost, 4)
+        eps.update(ep)
+    ok, err, mcost = _assemble_audio_cut(ep, ch, regen_music=True)
+    ep.spent_usd = round(ep.spent_usd + mcost, 4)
+    if not ok:
+        return _fail(eps, ep, f"audio assembly failed: {err}")
+    ep.stage_status = StageStatus.AWAITING_REVIEW.value
+    ep.log("audio", {"cost_usd": round(spent + mcost, 4),
+                     "duration_s": (ep.timeline.get("probe") or {}).get("duration_s")})
     return eps.update(ep)
 
 

@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import episode_pipeline, runner, sla as sla_mod
+from . import episode_jobs, episode_pipeline, runner, sla as sla_mod
 from .agents.storyboard import plan_storyboard
 from .capabilities import fal_image, pricing
 from .channels import CAST_ROLES, FORMATS, ChannelStore
@@ -337,6 +337,9 @@ def _episode_view(ep, channel_name: str = "") -> dict[str, Any]:
     d["stage_estimate_usd"] = episode_pipeline.stage_estimate(ep)
     d["image_unit_cost"] = round(pricing.image_cost(), 4)
     d["refs_done_count"] = sum(1 for s in ep.scenes if (s.get("reference_image") or {}).get("status") == "ok")
+    d["scenes_done_count"] = sum(1 for s in ep.scenes if (s.get("clip") or {}).get("status") in ("ok", "kenburns"))
+    d["audio_done_count"] = sum(1 for s in ep.scenes if (s.get("audio") or {}).get("status") == "ok")
+    d["generating"] = (ep.stage_status == "generating") or episode_jobs.is_running(ep.episode_id)
     # per-scene media URLs (only when the asset exists)
     for sc in d["scenes"]:
         seq = sc.get("seq")
@@ -415,21 +418,39 @@ def delete_episode(episode_id: str) -> dict[str, Any]:
     return {"deleted": episode_id}
 
 
+def _ep_view(episode_id: str) -> dict[str, Any]:
+    store = JobStore()
+    ep = EpisodeStore(store).get(episode_id)
+    if not ep:
+        raise HTTPException(404, "episode not found")
+    ch = ChannelStore(store).get(ep.channel_id)
+    return _episode_view(ep, ch.name if ch else "")
+
+
 @app.post("/api/episodes/{episode_id}/run")
 def run_stage(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Generate the current stage's artifact → parks at awaiting_review. Optional {brief} steers
-    ideation; {style_note} steers the reference-image look (refs preview)."""
+    """Generate the current stage's artifact. Quick stages (idea/script/refs-preview/assembly) run
+    inline; the heavy multi-asset stages (scenes/audio) run in the background so the UI can watch the
+    grid fill in. Optional {brief} steers ideation; {style_note} steers the refs preview look."""
     body = body or {}
+    store = JobStore()
+    ep = EpisodeStore(store).get(episode_id)
+    if not ep:
+        raise HTTPException(404, "episode not found")
+    if ep.stage in ("scenes", "audio"):
+        episode_jobs.start(episode_id, "generate_scenes" if ep.stage == "scenes" else "generate_audio")
+        return _ep_view(episode_id)
     return _episode_action(episode_id, lambda s, e: episode_pipeline.run_stage(
         s, e, brief=body.get("brief"), style_note=body.get("style_note")))
 
 
 @app.post("/api/episodes/{episode_id}/refs/batch")
 def refs_batch(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-    """After the preview is approved, generate reference images for all remaining scenes."""
+    """After the preview is approved, generate reference images for all remaining scenes — in the
+    background, so the grid fills in one image at a time."""
     body = body or {}
-    return _episode_action(episode_id, lambda s, e: episode_pipeline.generate_refs_batch(
-        s, e, style_note=body.get("style_note")))
+    episode_jobs.start(episode_id, "generate_refs_batch", style_note=(body or {}).get("style_note"))
+    return _ep_view(episode_id)
 
 
 @app.post("/api/episodes/{episode_id}/approve")

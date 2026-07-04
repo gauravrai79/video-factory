@@ -1,506 +1,557 @@
 "use strict";
-const $ = (s) => document.querySelector(s);
-const api = (p, o) => fetch(p, o).then(async (r) => {
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.detail || j.error || r.statusText);
-  return j;
-});
-const jbody = (p, m, body) => api(p, { method: m, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-const jpost = (p, body) => jbody(p, "POST", body);
-const jpatch = (p, body) => jbody(p, "PATCH", body);
+/* ============================ AI Influencer Factory — Studio SPA ============================ */
+const $ = (s, r = document) => r.querySelector(s);
 const esc = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt$ = (n) => "$" + Number(n || 0).toFixed(Number(n) < 1 ? 3 : 2);
+const api = async (p, o) => { const r = await fetch(p, o); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.detail || j.error || r.statusText); return j; };
+const jbody = (p, m, b) => api(p, { method: m, headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) });
+const jget = (p) => api(p);
+const jpost = (p, b) => jbody(p, "POST", b);
+const jpatch = (p, b) => jbody(p, "PATCH", b);
+const jdel = (p) => api(p, { method: "DELETE" });
 const splitList = (s) => String(s || "").split(",").map((x) => x.trim()).filter(Boolean);
 
-let characters = [], channels = [], episodes = [];
-let epFilter = "all";
-
-// ---------- header + stats ----------
-async function refreshSummary() {
-  const s = await api("/api/summary");
-  $("#env-chips").innerHTML = [
-    `<span class="chip"><b>${esc(s.tenant)}</b></span>`,
-    `<span class="chip">img <b>${esc(s.image_model)}</b></span>`,
-    `<span class="chip">vid <b>${esc(s.video_model)}</b></span>`,
-    s.fal_key_present ? `<span class="chip ok">fal.ai ✓</span>` : `<span class="chip warn">no fal key</span>`,
-  ].join("");
-  $("#stats").innerHTML = [
-    ["Channels", s.channels], ["Episodes", s.episodes], ["Characters", s.characters],
-    ["Delivered", s.by_state.delivered || 0], ["Spent", "$" + Number(s.spent_usd || 0).toFixed(2)],
-  ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+function toast(msg, kind = "") {
+  const t = document.createElement("div"); t.className = "toast " + kind; t.innerHTML = `${icon(kind === "err" ? "x" : "check")}<span>${esc(msg)}</span>`;
+  $("#toast-root").appendChild(t); setTimeout(() => t.remove(), 3500);
 }
 
-// ---------- characters (actors) ----------
-async function refreshCharacters() {
-  characters = await api("/api/characters");
-  $("#char-grid").innerHTML = characters.length
-    ? characters.map(actorCard).join("")
-    : `<p class="empty">No actors yet — create one to start building your cast.</p>`;
+/* ---------------- SVG icons (Lucide-style) ---------------- */
+const ICONS = {
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  film: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 7.5h4M17 7.5h4M3 12h18M3 16.5h4M17 16.5h4"/>',
+  folder: '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  sparkles: '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/>',
+  edit: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
+  refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
+  back: '<path d="m15 18-6-6 6-6"/>',
+  play: '<path d="m6 3 14 9-14 9V3Z"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
+  arrow: '<path d="M5 12h14M12 5l7 7-7 7"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+  key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
+  wand: '<path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8 19 13M15 9h0M17.8 6.2 19 5M3 21l9-9M12.2 6.2 11 5"/>',
+};
+const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24">${ICONS[name] || ""}</svg>`;
+
+/* ---------------- state + data ---------------- */
+const S = { summary: {}, channels: [], characters: [], episodes: [], channelId: null, ep: null, ddOpen: false };
+let pollTimer = null;
+
+async function loadCore() {
+  const [summary, channels, characters] = await Promise.all([jget("/api/summary"), jget("/api/channels"), jget("/api/characters")]);
+  S.summary = summary; S.channels = channels; S.characters = characters;
+}
+const channel = () => S.channels.find((c) => c.channel_id === S.channelId) || S.channels[0];
+const charById = (id) => S.characters.find((c) => c.character_id === id);
+
+/* ---------------- router ---------------- */
+function parseHash() {
+  const h = location.hash.replace(/^#\/?/, "");
+  const [a, b, c, d] = h.split("/");
+  if (a === "c" && b) return { cid: b, view: c || "overview", id: d };
+  return { view: "home" };
+}
+const go = (h) => { location.hash = h; };
+
+async function route() {
+  const r = parseHash();
+  if (r.view === "home" || !S.channels.length) return render();
+  if (r.cid && S.channelId !== r.cid) S.channelId = r.cid;
+  if (!channel()) { S.channelId = S.channels[0]?.channel_id; }
+  try { if (S.channelId) await reloadEpisodes(); } catch (e) {}
+  if (r.view === "ep" && r.id) { try { S.ep = await jget(`/api/episodes/${r.id}`); } catch { S.ep = null; } }
+  else S.ep = null;
+  render();
+  managePolling();
+}
+window.addEventListener("hashchange", route);
+
+/* ---------------- shell ---------------- */
+function railItem(view, ic, label) {
+  const active = (parseHash().view === view) || (view === "episodes" && parseHash().view === "ep");
+  return `<button class="rail-item ${active ? "active" : ""}" data-nav="c/${S.channelId}/${view}">${icon(ic)}<span>${label}</span></button>`;
 }
 
+function render() {
+  if (!S.channels.length) return renderNoChannels();
+  const ch = channel();
+  const s = S.summary;
+  const keyChip = s.fal_key_present ? `<span class="chip ok">${icon("check", "icon")} fal live</span>` : `<span class="chip warn">no fal key</span>`;
+  $("#app").innerHTML = `
+    <div class="shell">
+      <div class="topbar">
+        <div class="brand"><span class="logo">${icon("sparkles", "icon")}</span><b>Factory</b></div>
+        <button class="chan-switch" data-dd>${icon("film", "icon")}<span>${esc(ch.name)}</span><span class="sub">${esc(ch.format)}</span>${icon("chevron", "icon")}</button>
+        <div class="top-actions">
+          <span class="chip">${icon("image","icon")} ${esc(s.image_model || "")}</span>
+          ${keyChip}
+          <button class="icon-btn" data-nav="c/${S.channelId}/settings" title="Channel settings">${icon("settings")}</button>
+        </div>
+      </div>
+      <nav class="rail">
+        ${railItem("overview", "grid", "Overview")}
+        ${railItem("cast", "users", "Cast")}
+        ${railItem("episodes", "film", "Episodes")}
+        <div class="rail-spacer"></div>
+        <button class="rail-item" data-newchannel>${icon("plus")}<span>New channel</span></button>
+        ${railItem("settings", "settings", "Settings")}
+      </nav>
+      <main class="main"><div class="page" id="page"></div></main>
+    </div>`;
+  if (S.ddOpen) renderDropdown();
+  const v = parseHash().view;
+  const page = $("#page");
+  if (v === "cast") page.innerHTML = viewCast();
+  else if (v === "characters") page.innerHTML = viewCharacter(parseHash().id);
+  else if (v === "episodes") page.innerHTML = viewEpisodes();
+  else if (v === "ep") page.innerHTML = viewWorkspace();
+  else if (v === "settings") page.innerHTML = viewSettings();
+  else page.innerHTML = viewOverview();
+}
+
+function renderDropdown() {
+  const old = $(".dropdown"); if (old) old.remove();
+  const dd = document.createElement("div"); dd.className = "dropdown";
+  dd.innerHTML = S.channels.map((c) => `<button class="dd-item ${c.channel_id === S.channelId ? "active" : ""}" data-selchan="${c.channel_id}">
+      <span class="dot" style="opacity:${c.channel_id === S.channelId ? 1 : 0}"></span><span>${esc(c.name)}</span><small style="margin-left:auto">${esc(c.platform)}</small></button>`).join("")
+    + `<div class="dd-sep"></div><button class="dd-item" data-newchannel>${icon("plus","icon")}<span>New channel</span></button>`;
+  $("#app").appendChild(dd);
+}
+
+function renderNoChannels() {
+  $("#app").innerHTML = `<div style="display:grid;place-items:center;height:100vh;text-align:center">
+    <div><span class="logo" style="width:48px;height:48px;margin:0 auto 16px">${icon("sparkles","icon")}</span>
+    <h1 style="font-size:24px">AI Influencer Factory</h1>
+    <p class="muted" style="margin:8px 0 20px">Create your first channel (series) to begin.</p>
+    <button class="btn btn-primary" data-newchannel style="margin:0 auto">${icon("plus")} New channel</button></div></div>`;
+}
+
+/* ---------------- views ---------------- */
+function viewOverview() {
+  const ch = channel();
+  const eps = S.episodes;
+  return `<div class="page-head"><div><h1>${esc(ch.name)}</h1><div class="sub">${esc(ch.platform)} · ${esc(ch.format)} · ${ch.target_scene_count} scenes · ${esc(ch.art_style || "no art style set")}</div></div>
+    <button class="btn btn-primary" data-newep>${icon("plus")} New episode</button></div>
+    <div class="card" style="cursor:default;padding:18px 20px;background:var(--panel)"><div class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Premise</div>${esc(ch.premise || "No premise yet — set one in Settings.")}</div>
+    <div class="section-title">Cast</div>
+    <div class="grid cast">${(ch.roster || []).map(rosterMini).join("") || `<p class="muted">No cast — add characters in the Cast tab.</p>`}</div>
+    <div class="section-title">Recent episodes</div>
+    ${eps.length ? `<div class="grid eps">${eps.slice(0, 6).map(epCard).join("")}</div>` : `<p class="muted">No episodes yet.</p>`}`;
+}
+function rosterMini(r) {
+  const c = charById(r.character_id) || {};
+  const img = (c.reference_image_urls || [])[0];
+  return `<div class="card actor" data-nav="c/${S.channelId}/characters/${r.character_id}">
+    ${img ? `<img src="${img}"/>` : `<div class="ph">${esc((r.name || "?")[0])}</div>`}
+    <div class="meta"><b>${esc(r.name)}</b><div class="badges"><span class="mini-badge">${esc(r.role)}</span></div></div></div>`;
+}
+
+function viewCast() {
+  return `<div class="page-head"><div><h1>Cast</h1><div class="sub">Reusable actors — reference photos lock identity across every scene.</div></div></div>
+    <div class="grid cast">
+      <button class="add-card" data-newchar>${icon("plus")}<span>New character</span></button>
+      ${S.characters.map(actorCard).join("")}
+    </div>`;
+}
 function actorCard(c) {
-  const thumb = c.reference_image_urls.length
-    ? `<img src="${c.reference_image_urls[0]}" alt="${esc(c.name)}" />`
-    : `<span class="ph">${esc((c.name || "?")[0])}</span>`;
-  const traits = (c.personality && c.personality.traits) ? c.personality.traits.slice(0, 3).join(", ") : "";
-  return `<div class="actor-card">
-    <div class="actor-thumb">${thumb}</div>
-    <div class="actor-meta">
-      <div class="actor-name"><b>${esc(c.name)}</b> <small>${esc(c.species)}</small></div>
+  const img = (c.reference_image_urls || [])[0];
+  const traits = (c.personality && c.personality.traits || []).slice(0, 3).join(", ");
+  return `<div class="card actor" data-nav="c/${S.channelId}/characters/${c.character_id}">
+    ${img ? `<img src="${img}"/>` : `<div class="ph">${esc((c.name || "?")[0])}</div>`}
+    <div class="meta"><b>${esc(c.name)}</b>
       <div class="badges">
-        <span class="badge2 ${c.has_voice ? "on" : "off"}">🎤 voice ${c.has_voice ? "✓" : "–"}</span>
-        <span class="badge2 ${c.has_reference ? "on" : "off"}">📸 ${c.reference_image_urls.length} ref${c.reference_image_urls.length === 1 ? "" : "s"}</span>
-      </div>
-      ${traits ? `<div class="persona-preview">${esc(traits)}</div>` : `<div class="persona-preview muted">no personality set</div>`}
-      <div class="actor-actions">
-        <button class="linklike" data-edit-actor="${c.character_id}">edit</button>
-        <button class="linklike" data-upload="${c.character_id}">upload ref</button>
-      </div>
-    </div>
-  </div>`;
+        <span class="mini-badge ${c.has_voice ? "on" : ""}">${icon("mic", "icon")} ${c.has_voice ? "voice" : "no voice"}</span>
+        <span class="mini-badge ${c.has_reference ? "on" : ""}">${(c.reference_image_urls || []).length} ref</span>
+      </div></div></div>`;
 }
 
-// create character
-$("#new-char-btn").addEventListener("click", () => { $("#char-form").hidden = !$("#char-form").hidden; });
-$("#char-cancel").addEventListener("click", () => { $("#char-form").hidden = true; });
-$("#char-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const msg = $("#char-msg");
-  try {
-    await jpost("/api/characters", {
-      name: $("#c-name").value.trim(), species: $("#c-species").value, dna_prompt: $("#c-dna").value.trim(),
-    });
-    $("#char-form").reset(); $("#char-form").hidden = true; msg.textContent = "";
-    refreshCharacters();
-  } catch (err) { msg.className = "hint err"; msg.textContent = "Error: " + err.message; }
-});
-
-// upload reference image (base64, no generation)
-const fileInput = Object.assign(document.createElement("input"), { type: "file", accept: "image/*", hidden: true });
-document.body.appendChild(fileInput);
-let uploadTarget = null;
-function fileToB64(file) {
-  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
-}
-fileInput.addEventListener("change", async () => {
-  const f = fileInput.files[0]; if (!f || !uploadTarget) return;
-  try {
-    await jpost(`/api/characters/${uploadTarget}/reference`, { filename: f.name, data_base64: await fileToB64(f) });
-    refreshCharacters();
-    if (!$("#drawer").hidden) openActor(uploadTarget);
-  } catch (err) { alert("Upload failed: " + err.message); }
-  fileInput.value = ""; uploadTarget = null;
-});
-
-// edit actor drawer (voice + personality)
-async function openActor(id) {
-  const c = await api(`/api/characters/${id}`);
+function viewCharacter(id) {
+  const c = charById(id); if (!c) return `<p class="muted">Character not found.</p>`;
   const p = c.personality || {}, v = c.voice || {};
-  const refs = c.reference_image_urls.map((u) => `<img class="ref-thumb" src="${u}" />`).join("") ||
-    `<span class="muted">no reference images yet — click "add photo"</span>`;
-  $("#drawer-body").innerHTML = `
-    <h2>${esc(c.name)} <small>${esc(c.species)}</small></h2>
-    <div class="section-title">Visual DNA (reference sheet)</div>
-    <div class="ref-strip">${refs}</div>
-    <button class="ghost sm" data-upload="${c.character_id}">+ add photo</button>
-    <div class="kv2" style="margin-top:10px">
-      <label>Look / appearance <small>(text description; your reference photos override this for generation)</small>
-        <textarea id="c-dnaprompt" rows="2">${esc(c.dna_prompt || "")}</textarea></label>
-    </div>
-    <div class="section-title">Voice DNA</div>
-    <div class="kv2">
-      <label>Provider <input id="v-provider" value="${esc(v.provider || "elevenlabs")}" /></label>
-      <label>Voice ID <input id="v-id" value="${esc(v.voice_id || "")}" placeholder="ElevenLabs voice id" /></label>
-      <label>Signature line <input id="v-sig" value="${esc(v.signature_line || "")}" placeholder="a short preview line" /></label>
-    </div>
-    <div class="section-title">Personality DNA <small>(system prompt for writing + delivery)</small></div>
-    <div class="kv2">
-      <label>Backstory <textarea id="p-back" rows="2">${esc(p.backstory || "")}</textarea></label>
-      <label>Traits <small>(comma-sep)</small> <input id="p-traits" value="${esc((p.traits || []).join(", "))}" /></label>
-      <label>Speech style <input id="p-speech" value="${esc(p.speech_style || "")}" /></label>
-      <label>Catchphrases <small>(comma-sep)</small> <input id="p-catch" value="${esc((p.catchphrases || []).join(", "))}" /></label>
-      <label>Mannerisms <small>(comma-sep)</small> <input id="p-mann" value="${esc((p.mannerisms || []).join(", "))}" /></label>
-    </div>
-    <div class="post-actions"><button id="actor-save" data-actor="${c.character_id}">Save actor</button></div>
-    <p class="hint" id="actor-msg"></p>`;
-  $("#backdrop").hidden = false; $("#drawer").hidden = false;
-}
-async function saveActor(id) {
-  const body = {
-    dna_prompt: $("#c-dnaprompt").value.trim(),
-    voice: { provider: $("#v-provider").value.trim(), voice_id: $("#v-id").value.trim(), signature_line: $("#v-sig").value.trim() },
-    personality: {
-      backstory: $("#p-back").value.trim(), traits: splitList($("#p-traits").value),
-      speech_style: $("#p-speech").value.trim(), catchphrases: splitList($("#p-catch").value),
-      mannerisms: splitList($("#p-mann").value),
-    },
-  };
-  try { await jpatch(`/api/characters/${id}`, body); $("#actor-msg").className = "hint ok"; $("#actor-msg").textContent = "Saved."; refreshCharacters(); }
-  catch (err) { $("#actor-msg").className = "hint err"; $("#actor-msg").textContent = "Error: " + err.message; }
+  const refs = (c.reference_image_urls || []).map((u) => `<img src="${u}"/>`).join("") || `<p class="muted">No reference photos.</p>`;
+  return `<a class="ws-back" data-nav="c/${S.channelId}/cast">${icon("back")} Cast</a>
+    <div class="page-head" style="margin-top:12px"><div><h1>${esc(c.name)}</h1><div class="sub">${esc(c.species)}</div></div>
+      <div style="display:flex;gap:10px"><button class="btn btn-ghost" data-uploadref="${c.character_id}">${icon("upload")} Add photo</button>
+      <button class="btn btn-ghost" data-editchar="${c.character_id}">${icon("edit")} Edit</button></div></div>
+    <div class="char-detail">
+      <div><div class="section-title" style="margin-top:0">Visual DNA</div><div class="ref-sheet">${refs}</div></div>
+      <div>
+        <div class="section-title" style="margin-top:0">Voice DNA</div>
+        <div class="kv"><div class="k">Provider</div><div>${esc(v.provider || "—")}</div><div class="k">Voice ID</div><div>${esc(v.voice_id || "not set")}</div></div>
+        <div class="section-title">Personality</div>
+        ${p.backstory ? `<p style="font-size:13px">${esc(p.backstory)}</p>` : `<p class="muted">No personality set.</p>`}
+        <div class="kv" style="margin-top:10px">
+          ${p.traits && p.traits.length ? `<div class="k">Traits</div><div>${esc(p.traits.join(", "))}</div>` : ""}
+          ${p.speech_style ? `<div class="k">Speech</div><div>${esc(p.speech_style)}</div>` : ""}
+          ${p.catchphrases && p.catchphrases.length ? `<div class="k">Catchphrases</div><div>${esc(p.catchphrases.join("; "))}</div>` : ""}
+        </div>
+        <div class="section-title">Look / appearance</div>
+        <p style="font-size:13px" class="muted">${esc(c.dna_prompt || "not set")}</p>
+      </div>
+    </div>`;
 }
 
-// ---------- channels ----------
-async function refreshChannels() {
-  channels = await api("/api/channels");
-  $("#channel-grid").innerHTML = channels.length
-    ? channels.map(channelCard).join("")
-    : `<p class="empty">No channels yet — a channel is a series (premise + cast + format).</p>`;
-  renderEpFilters();
+function viewEpisodes() {
+  return `<div class="page-head"><div><h1>Episodes</h1><div class="sub">${channel().name}</div></div>
+    <button class="btn btn-primary" data-newep>${icon("plus")} New episode</button></div>
+    ${S.episodes.length ? `<div class="grid eps">${S.episodes.map(epCard).join("")}</div>`
+      : `<div class="empty">${icon("film")}<div>No episodes yet — create your first.</div></div>`}`;
+}
+function epCard(e) {
+  const thumb = e.final_url || e.audio_cut_url || e.rough_cut_url;
+  const first = (e.scenes || []).find((s) => s.still_url);
+  return `<div class="card" data-nav="c/${S.channelId}/ep/${e.episode_id}">
+    <div class="epcard-thumb">${first ? `<img src="${first.still_url}"/>` : `<div class="ph">${icon("film")}</div>`}</div>
+    <div class="epcard-body"><b>${esc(e.title)}</b>
+      <div class="epcard-meta"><span class="stbadge ${e.stage}">${esc(e.stage)}</span>
+        <small>${e.generating ? "generating…" : esc(e.stage_status)}</small>
+        <button class="icon-btn" data-delep="${e.episode_id}" title="delete" style="margin-left:auto;width:28px;height:28px">${icon("trash")}</button></div></div></div>`;
 }
 
-function channelCard(ch) {
-  const roster = ch.roster.map((r) =>
-    `<span class="cast-chip" title="${esc(r.role)}">${esc(r.name)} <small>${esc(r.role)}${r.has_reference ? " 📸" : ""}${r.has_voice ? " 🎤" : ""}</small></span>`).join("") || `<span class="muted">no cast</span>`;
-  return `<div class="channel-card">
-    <div class="ch-head"><b>${esc(ch.name)}</b> <small>${esc(ch.platform)} · ${esc(ch.format)}</small></div>
-    <div class="ch-premise">${esc(ch.premise || "no premise")}</div>
-    <div class="roster">${roster}</div>
-    <div class="ch-meta">${ch.target_scene_count} scenes · ${ch.target_duration_s}s · budget ${ch.video_budget} · ${esc(ch.writer_provider)} · <span class="art">${esc(ch.art_style || "no style")}</span></div>
-    <div class="actor-actions"><button class="linklike" data-new-ep="${ch.channel_id}">+ episode</button>
-      <button class="linklike" data-edit-channel="${ch.channel_id}">edit</button></div>
-  </div>`;
+function viewSettings() {
+  const ch = channel();
+  return `<div class="page-head"><div><h1>Channel settings</h1><div class="sub">${esc(ch.name)}</div></div>
+    <button class="btn btn-ghost" data-editchannel="${ch.channel_id}">${icon("edit")} Edit channel</button></div>
+    <div class="kv" style="max-width:640px">
+      <div class="k">Platform</div><div>${esc(ch.platform)}</div>
+      <div class="k">Format</div><div>${esc(ch.format)}</div>
+      <div class="k">Art style</div><div>${esc(ch.art_style || "— (empty: images default to photoreal)")}</div>
+      <div class="k">Premise</div><div>${esc(ch.premise || "—")}</div>
+      <div class="k">Scenes / duration</div><div>${ch.target_scene_count} · ${ch.target_duration_s}s</div>
+      <div class="k">Video budget</div><div>${ch.video_budget} hero shots</div>
+      <div class="k">Writer</div><div>${esc(ch.writer_provider)}</div>
+      <div class="k">Narrator voice</div><div>${esc(ch.narrator_voice_id || "—")}</div>
+      <div class="k">Cast</div><div>${(ch.roster || []).map((r) => esc(r.name) + " (" + esc(r.role) + ")").join(", ") || "—"}</div>
+    </div>`;
 }
 
-$("#new-channel-btn").addEventListener("click", () => {
-  const f = $("#channel-form"); f.hidden = !f.hidden;
-  if (!f.hidden) $("#cast-picker").innerHTML = characters.length
-    ? characters.map((c) => `<label class="cast-opt"><input type="checkbox" value="${c.character_id}" /> ${esc(c.name)}</label>`).join("")
-    : `<span class="muted">create characters first to cast them</span>`;
-});
-$("#channel-cancel").addEventListener("click", () => { $("#channel-form").hidden = true; });
-$("#channel-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const msg = $("#channel-msg");
-  const picked = [...document.querySelectorAll("#cast-picker input:checked")].map((i) => i.value);
-  const cast = picked.map((id, i) => ({ character_id: id, role: i === 0 ? "lead" : "sidekick" }));
+/* ---------------- episode workspace ---------------- */
+const STAGES = [["idea", "Idea"], ["script", "Script"], ["refs", "Refs"], ["scenes", "Scenes"], ["audio", "Audio"], ["assembly", "Assembly"], ["done", "Done"]];
+function viewWorkspace() {
+  const e = S.ep; if (!e) return `<p class="muted">Episode not found.</p>`;
+  const idx = STAGES.findIndex(([k]) => k === e.stage);
+  const steps = STAGES.map(([k, label], i) => {
+    const cls = i < idx || (e.stage === "done") ? "done" : (i === idx ? "current" : "");
+    const num = (i < idx) ? icon("check", "icon") : (i + 1);
+    return `<div class="step ${cls}"><span class="num">${num}</span>${label}</div>`;
+  }).join(`<span class="step-sep">${icon("arrow", "icon")}</span>`);
+  return `<a class="ws-back" data-nav="c/${S.channelId}/episodes">${icon("back")} Episodes</a>
+    <div class="ws-head" style="margin-top:12px"><h1>${esc(e.title)}</h1>
+      <div class="ws-meta"><span>${e.cast.length} cast</span><span>${e.scene_count} scenes</span><span>writer ${esc(e.writer_model || "—")}</span><span>spent ${fmt$(e.spent_usd)}</span></div></div>
+    <div class="stepper">${steps}</div>
+    <div class="stage-body" id="stagebody">${renderStage(e)}</div>`;
+}
+
+function renderStage(e) {
+  if (e.stage_error) var errBar = `<div class="err-banner">${icon("x", "icon")} ${esc(e.stage_error)}</div>`; else errBar = "";
+  const gen = e.generating;
+  switch (e.stage) {
+    case "idea": return errBar + stageIdea(e, gen);
+    case "script": return errBar + stageScript(e, gen);
+    case "refs": return errBar + stageRefs(e, gen);
+    case "scenes": return errBar + stageScenes(e, gen);
+    case "audio": return errBar + stageAudio(e, gen);
+    case "assembly": return errBar + stageAssembly(e, gen);
+    case "done": return stageDone(e);
+    default: return "";
+  }
+}
+
+/* --- Idea --- */
+function stageIdea(e, gen) {
+  const brief = `<div class="field" style="max-width:640px"><label>Idea brief (optional — steer the concepts)</label>
+    <textarea id="idea-brief" rows="2" placeholder="e.g. a rainy-night stakeout; introduce a cat burglar">${esc(e.idea_brief || "")}</textarea></div>`;
+  if (e.stage_status === "awaiting_review" && e.idea_candidates.length) {
+    return `<p class="stage-intro">Pick the best idea — the model that wrote it goes on to write the script.</p>
+      <div class="idea-col">${e.idea_candidates.map(ideaCard).join("")}</div>
+      <div style="margin:18px 0">${brief}</div>
+      <button class="btn btn-ghost" data-runidea>${icon("refresh")} Regenerate all models</button>`;
+  }
+  return `<p class="stage-intro">A panel of models (Opus 4.8 · GPT-5.5 · DeepSeek V4 Pro · GLM 5.2) each proposes an idea at once, grounded in the channel premise + cast. Near-free.</p>
+    ${brief}<div style="margin-top:14px"><button class="btn btn-primary" data-runidea ${gen ? "disabled" : ""}>${gen ? spin() : icon("sparkles")} ${gen ? "Generating…" : "Generate ideas"}</button></div>`;
+}
+function ideaCard(x, i) {
+  const beats = (x.beats || []).map((b) => `<li>${esc(b)}</li>`).join("");
+  return `<div class="idea"><div class="top"><b>${esc(x.title || "Untitled")}</b>${x.model_label ? `<span class="model-badge">${esc(x.model_label)}</span>` : ""}</div>
+    <div class="log">${esc(x.logline || "")}</div>${x.hook ? `<div class="hook"><span>hook</span>${esc(x.hook)}</div>` : ""}
+    ${beats ? `<ul>${beats}</ul>` : ""}<div class="pick"><button class="btn btn-primary btn-sm" data-pickidea="${i}">${icon("check")} Use this</button></div></div>`;
+}
+
+/* --- Script --- */
+function stageScript(e, gen) {
+  const chosen = e.idea && e.idea.title ? `<div class="stage-intro">📌 <b>${esc(e.idea.title)}</b> — ${esc(e.idea.logline || "")}</div>`.replace("📌 ", "") : "";
+  if (e.stage_status === "awaiting_review" && e.scenes.length) {
+    return `${chosen}<div class="section-title" style="margin-top:0">Script — ${e.scenes.length} scenes</div>
+      <div class="script">${e.scenes.map(sceneRow).join("")}</div>
+      ${actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve script</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Rewrite</button>`])}`;
+  }
+  return `${chosen}<p class="stage-intro">Expand the idea into a scene-by-scene script (dialogue, narration, shot types). Near-free.</p>
+    <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("edit")} ${gen ? "Writing…" : "Write script"}</button>`;
+}
+function sceneRow(s) {
+  const nm = (id) => (charById(id) || {}).name || "?";
+  return `<div class="sc"><div class="h"><b>${esc(s.heading || "scene")}</b><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span><small>${s.duration_s}s</small></div>
+    <div class="act">${esc(s.action || "")}</div>${s.narration ? `<div class="vo">${icon("mic","icon")} ${esc(s.narration)}</div>` : ""}
+    ${(s.dialogue || []).map((d) => `<div class="line"><b>${esc(nm(d.speaker))}</b>: ${esc(d.line)}${d.delivery ? ` <em>(${esc(d.delivery)})</em>` : ""}</div>`).join("")}</div>`;
+}
+const shotLabel = (t) => ({ broll: "b-roll", still_kenburns: "ken burns", lipsync_still: "lip-sync", hero_video: "hero video" }[t] || t);
+
+/* --- Refs (preview + live batch grid) --- */
+function stageRefs(e, gen) {
+  const unit = Number(e.image_unit_cost || 0);
+  const styleBox = `<div class="field" style="max-width:640px"><label>Style note (optional — applied to every image)</label>
+    <textarea id="style-note" rows="2" placeholder="e.g. warmer lighting; more exaggerated cartoon proportions">${esc(e.style_note || "")}</textarea></div>`;
+  // batch running or done → live grid
+  if (gen || e.refs_batch_done) {
+    const done = e.refs_done_count, total = e.scene_count;
+    const progress = gen ? progBar(done, total, "Generating reference images", e.spent_usd) : "";
+    const grid = `<div class="grid tiles">${e.scenes.map((s) => refTile(e, s, gen)).join("")}</div>`;
+    const bar = (!gen && e.refs_batch_done) ? actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve references</button>`, `<button class="btn btn-ghost" data-runrefs>${icon("refresh")} Start over</button>`]) : "";
+    return `${progress}${grid}${bar}`;
+  }
+  // preview ready → approve look / tweak
+  if (e.stage_status === "awaiting_review") {
+    const p = e.scenes.find((s) => s.still_url) || e.scenes[0] || {};
+    const n = Math.max(0, e.scene_count - 1); const cost = (n * unit).toFixed(2);
+    return `<p class="stage-intro">Preview one shot to approve the look (character + art style). Then generate the rest — you'll watch them fill in.</p>
+      <div class="preview-cap">Scene ${(p.seq ?? 0) + 1}: ${esc(p.heading || "")}</div>
+      ${p.still_url ? `<div class="preview-hero"><img src="${p.still_url}?t=${Date.now()}"/></div>` : `<div class="err-banner">Preview failed — regenerate.</div>`}
+      ${styleBox}
+      <div style="display:flex;gap:10px;margin-top:14px"><button class="btn btn-primary" data-refsbatch>${icon("check")} Looks good — generate all ${n} (~$${cost})</button>
+      <button class="btn btn-ghost" data-runrefs>${icon("refresh")} Regenerate preview (~${fmt$(unit)})</button></div>`;
+  }
+  // initial
+  return `<p class="stage-intro">Generate ONE preview to approve the look (character identity + channel art style), then batch the rest at ~${fmt$(unit)}/image via Gemini.</p>
+    ${styleBox}<div style="margin-top:14px"><button class="btn btn-primary" data-runrefs ${gen ? "disabled" : ""}>${gen ? spin() : icon("image")} ${gen ? "Generating…" : "Generate preview"}</button></div>`;
+}
+function refTile(e, s, gen) {
+  const ri = s.reference_image || {};
+  const ok = ri.status === "ok" && s.still_url;
+  let state = "queued", inner = `<div class="spin-lg"></div>`;
+  if (ok) { state = "done"; inner = `<img src="${s.still_url}?t=${e.updated_at}"/>`; }
+  else if (ri.status === "failed") { state = "fail"; inner = `<div class="fail">${icon("x","icon")} failed</div>`; }
+  else if (gen) { state = "working"; }
+  return `<div class="tile ${state}"><div class="thumb">${inner}</div>
+    <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
+      ${ok && !gen ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+}
+
+/* --- Scenes (live grid) --- */
+function stageScenes(e, gen) {
+  const hero = e.scenes.filter((s) => s.shot_type === "hero_video").length;
+  if (gen || e.stage_status === "awaiting_review") {
+    const progress = gen ? progBar(e.scenes_done_count, e.scene_count, "Rendering scenes", e.spent_usd) : "";
+    const player = (!gen && e.rough_cut_url) ? `<video class="player" controls preload="metadata" src="${e.rough_cut_url}?t=${e.updated_at}"></video>` : "";
+    const grid = `<div class="grid tiles">${e.scenes.map((s) => sceneTile(e, s, gen)).join("")}</div>`;
+    const bar = (!gen && e.rough_cut_url) ? actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve cut</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Re-render</button>`]) : "";
+    return `${progress}${player}<div class="section-title" style="margin-top:0">Shots</div>${grid}${bar}`;
+  }
+  return `<p class="stage-intro">Render the motion: <b>${hero}</b> hero video shot(s); the rest use free Ken Burns on their stills, then stitch a silent rough cut. ~${fmt$(e.stage_estimate_usd)}.</p>
+    <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("film")} ${gen ? "Rendering…" : `Render scenes (~${fmt$(e.stage_estimate_usd)})`}</button>`;
+}
+function sceneTile(e, s, gen) {
+  const clip = s.clip || {}; const done = clip.status === "ok" || clip.status === "kenburns";
+  let state = gen ? "working" : "queued", inner = `<div class="spin-lg"></div>`;
+  if (s.still_url) inner = `<img src="${s.still_url}?t=${e.updated_at}"/>`;
+  if (done) state = "done";
+  const clipTag = s.clip_url ? `<span class="clip-tag">${icon("play","icon")} clip</span>` : "";
+  return `<div class="tile ${state}"><div class="thumb">${inner}${clipTag}${(gen && !done) ? `<div class="spin-lg" style="position:absolute"></div>` : ""}</div>
+    <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
+      ${done && !gen ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+}
+
+/* --- Audio --- */
+function stageAudio(e, gen) {
+  if (gen || e.stage_status === "awaiting_review") {
+    const progress = gen ? progBar(e.audio_done_count, e.scene_count, "Generating voices + music", e.spent_usd) : "";
+    const player = (!gen && e.audio_cut_url) ? `<video class="player" controls preload="metadata" src="${e.audio_cut_url}?t=${e.updated_at}"></video>` : "";
+    const grid = `<div class="grid tiles">${e.scenes.map((s) => audioTile(e, s, gen)).join("")}</div>`;
+    const bar = (!gen && e.audio_cut_url) ? actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve audio</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Regenerate</button>`]) : "";
+    return `${progress}${player}<div class="section-title" style="margin-top:0">Voiced cut · 🔊 review with sound</div>${grid}${bar}`.replace("🔊 ", "");
+  }
+  return `<p class="stage-intro">Narrator VO + each character's locked voice + a music bed; lip-sync on talking shots, then a voiced cut. ~${fmt$(e.stage_estimate_usd)}.</p>
+    <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("mic")} ${gen ? "Working…" : `Generate voices + music (~${fmt$(e.stage_estimate_usd)})`}</button>`;
+}
+function audioTile(e, s, gen) {
+  const done = (s.audio || {}).status === "ok";
+  let state = gen ? "working" : (done ? "done" : "queued");
+  const inner = s.still_url ? `<img src="${s.still_url}?t=${e.updated_at}"/>` : `<div class="spin-lg"></div>`;
+  return `<div class="tile ${state}"><div class="thumb">${inner}${(gen && !done) ? `<div class="spin-lg" style="position:absolute"></div>` : ""}${done ? `<span class="clip-tag">${icon("mic","icon")}</span>` : ""}</div>
+    <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
+      ${done && !gen ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+}
+
+/* --- Assembly / Done --- */
+function stageAssembly(e, gen) {
+  if (e.stage_status === "awaiting_review" && e.final_url) {
+    return `<video class="player" controls preload="metadata" src="${e.final_url}?t=${e.updated_at}"></video>
+      ${actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve &amp; finish</button>`, `<a class="btn btn-ghost" href="${e.final_url}" download>${icon("download")} Download</a>`])}`;
+  }
+  return `<p class="stage-intro">Build the final cut + editable timeline (EDL). Free — no generation.</p>
+    <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("film")} ${gen ? "Assembling…" : "Assemble final"}</button>`;
+}
+function stageDone(e) {
+  return `<div class="done-banner">${icon("check")} Episode complete</div>
+    ${e.final_url ? `<video class="player" controls preload="metadata" src="${e.final_url}?t=${e.updated_at}"></video>
+      <a class="btn btn-primary" href="${e.final_url}" download>${icon("download")} Download episode</a>` : ""}`;
+}
+
+/* ---------------- small helpers ---------------- */
+const spin = () => `<span class="spin" style="width:15px;height:15px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;display:inline-block;animation:spin .8s linear infinite"></span>`;
+function progBar(done, total, label, spent) {
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  return `<div class="prog"><span class="spin"></span><b>${done}/${total}</b> <span class="muted">${label}</span><div class="bar"><i style="width:${pct}%"></i></div><b>${fmt$(spent)}</b></div>`;
+}
+function actionBar(btns) { return `<div class="actionbar"><span class="cost">spent <b>${fmt$(S.ep.spent_usd)}</b></span>${btns.join("")}</div>`; }
+
+/* ---------------- polling ---------------- */
+function managePolling() {
+  const shouldPoll = parseHash().view === "ep" && S.ep && S.ep.generating;
+  if (shouldPoll && !pollTimer) pollTimer = setInterval(pollEpisode, 1600);
+  if (!shouldPoll && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+async function pollEpisode() {
+  if (!S.ep) return;
   try {
-    await jpost("/api/channels", {
-      name: $("#ch-name").value.trim(), platform: $("#ch-platform").value, format: $("#ch-format").value,
-      premise: $("#ch-premise").value.trim(), art_style: $("#ch-style").value.trim(),
-      target_scene_count: Number($("#ch-scenes").value), target_duration_s: Number($("#ch-dur").value),
-      video_budget: Number($("#ch-budget").value), writer_provider: $("#ch-writer").value, cast,
-    });
-    $("#channel-form").reset(); $("#channel-form").hidden = true; msg.textContent = "";
-    refreshChannels();
-  } catch (err) { msg.className = "hint err"; msg.textContent = "Error: " + err.message; }
+    const fresh = await jget(`/api/episodes/${S.ep.episode_id}`);
+    S.ep = fresh;
+    const body = $("#stagebody"); if (body) body.innerHTML = renderStage(fresh);
+    if (!fresh.generating) { clearInterval(pollTimer); pollTimer = null; render(); }  // full re-render when done (stepper etc.)
+  } catch (e) { /* transient */ }
+}
+
+/* ---------------- actions ---------------- */
+async function refreshEp() { S.ep = await jget(`/api/episodes/${S.ep.episode_id}`); const b = $("#stagebody"); if (b) b.innerHTML = renderStage(S.ep); managePolling(); }
+async function epAct(fn, optimisticGen) {
+  try {
+    if (optimisticGen && S.ep) { S.ep.generating = true; const b = $("#stagebody"); if (b) b.innerHTML = renderStage(S.ep); }
+    S.ep = await fn(); render(); managePolling();
+  } catch (err) { toast(err.message, "err"); try { await refreshEp(); } catch (e) {} }
+}
+
+document.addEventListener("click", async (ev) => {
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll]");
+  // close dropdown on outside click
+  if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
+  if (!t) return;
+  const d = t.dataset;
+  if (d.nav !== undefined) return go(d.nav);
+  if (d.dd !== undefined) { S.ddOpen = !S.ddOpen; return S.ddOpen ? renderDropdown() : ($(".dropdown") && $(".dropdown").remove()); }
+  if (d.selchan) { S.ddOpen = false; S.channelId = d.selchan; return go(`c/${d.selchan}/overview`); }
+  if (d.newchannel !== undefined) return modalChannel();
+  if (d.editchannel) return modalChannel(S.channels.find((c) => c.channel_id === d.editchannel));
+  if (d.newchar !== undefined) return modalCharacter();
+  if (d.editchar) return modalCharacter(charById(d.editchar));
+  if (d.uploadref) return uploadRef(d.uploadref);
+  if (d.newep !== undefined) return newEpisode();
+  if (d.delep) return delEpisode(d.delep);
+  // workspace stage actions
+  if (d.runidea !== undefined) { const brief = $("#idea-brief") ? $("#idea-brief").value.trim() : ""; return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/run`, { brief }), true); }
+  if (d.pickidea !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/approve`, { choice: Number(d.pickidea) }));
+  if (d.run !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/run`, {}), true);
+  if (d.approve !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/approve`, {}));
+  if (d.runrefs !== undefined) { const sn = $("#style-note") ? $("#style-note").value.trim() : ""; return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/run`, { style_note: sn }), true); }
+  if (d.refsbatch !== undefined) { const sn = $("#style-note") ? $("#style-note").value.trim() : ""; const n = S.ep.scene_count - 1, cost = (n * S.ep.image_unit_cost).toFixed(2); if (!confirm(`Generate ${n} more images (~$${cost})?`)) return; return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/refs/batch`, { style_note: sn }), true); }
+  if (d.reroll !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/scene/${d.reroll}/reroll`, {}), true);
 });
 
-// edit channel drawer
-function _opt(val, cur, label) { return `<option value="${val}" ${val === cur ? "selected" : ""}>${label || val}</option>`; }
-async function openChannel(id) {
-  const c = await api(`/api/channels/${id}`);
-  const casts = characters.map((ch) => {
-    const inCast = (c.cast || []).find((m) => m.character_id === ch.character_id);
-    return `<label class="cast-opt"><input type="checkbox" value="${ch.character_id}" ${inCast ? "checked" : ""}/> ${esc(ch.name)}</label>`;
-  }).join("") || `<span class="muted">no characters</span>`;
-  $("#drawer-body").innerHTML = `
-    <h2>Edit channel</h2>
-    <div class="fsn">${esc(c.slug)}</div>
-    <div class="kv2">
-      <label>Name <input id="ec-name" value="${esc(c.name)}"/></label>
-      <label>Platform <input id="ec-platform" value="${esc(c.platform)}"/></label>
-      <label>Format <select id="ec-format">${_opt("long_form", c.format)}${_opt("short_form", c.format)}</select></label>
-      <label>Art style <input id="ec-style" value="${esc(c.art_style)}"/></label>
-      <label>Premise <textarea id="ec-premise" rows="3">${esc(c.premise)}</textarea></label>
-      <label>Narrator voice <input id="ec-narr" value="${esc(c.narrator_voice_id)}"/></label>
-      <div class="row2">
-        <label>Scenes <input type="number" id="ec-scenes" value="${c.target_scene_count}"/></label>
-        <label>Duration (s) <input type="number" id="ec-dur" value="${c.target_duration_s}"/></label>
-      </div>
-      <div class="row2">
-        <label>Video budget <input type="number" id="ec-budget" value="${c.video_budget}"/></label>
-        <label>Writer <input id="ec-writer" value="${esc(c.writer_provider)}"/></label>
-      </div>
-    </div>
-    <div class="section-title">Cast <small>(first checked = lead)</small></div>
-    <div id="ec-cast" class="cast-picker">${casts}</div>
-    <div class="post-actions"><button id="ec-save" data-channel="${c.channel_id}">Save channel</button></div>
-    <p class="hint" id="ec-msg"></p>`;
-  $("#backdrop").hidden = false; $("#drawer").hidden = false;
-}
-async function saveChannel(id) {
-  const picked = [...document.querySelectorAll("#ec-cast input:checked")].map((i) => i.value);
-  const cast = picked.map((cid, i) => ({ character_id: cid, role: i === 0 ? "lead" : "sidekick" }));
-  const body = {
-    name: $("#ec-name").value.trim(), platform: $("#ec-platform").value.trim(), format: $("#ec-format").value,
-    art_style: $("#ec-style").value.trim(), premise: $("#ec-premise").value.trim(),
-    narrator_voice_id: $("#ec-narr").value.trim(), target_scene_count: Number($("#ec-scenes").value),
-    target_duration_s: Number($("#ec-dur").value), video_budget: Number($("#ec-budget").value),
-    writer_provider: $("#ec-writer").value.trim(), cast,
-  };
-  try { await jpatch(`/api/channels/${id}`, body); $("#ec-msg").className = "hint ok"; $("#ec-msg").textContent = "Saved."; refreshChannels(); }
-  catch (err) { $("#ec-msg").className = "hint err"; $("#ec-msg").textContent = "Error: " + err.message; }
-}
-
-// ---------- episodes ----------
-async function refreshEpisodes() {
-  episodes = await api("/api/episodes");
-  const shown = episodes.filter((e) => epFilter === "all" || e.channel_id === epFilter);
-  $("#ep-empty").style.display = episodes.length ? "none" : "block";
-  $("#ep-body").innerHTML = shown.map(epRow).join("");
-}
-function renderEpFilters() {
-  const opts = [`<button data-epf="all" class="${epFilter === "all" ? "active" : ""}">all</button>`]
-    .concat(channels.map((c) => `<button data-epf="${c.channel_id}" class="${epFilter === c.channel_id ? "active" : ""}">${esc(c.name)}</button>`));
-  $("#ep-filters").innerHTML = opts.join("");
-}
-function stepper(ep) {
-  return `<div class="stepper">` + ep.stages.map((st, i) =>
-    `<span class="step ${i < ep.stage_index ? "done" : i === ep.stage_index ? "cur" : ""}">${esc(st)}</span>`).join("<i>›</i>") + `</div>`;
-}
-function epRow(e) {
-  return `<tr>
-    <td>${esc(e.channel_name)}</td><td>${e.number}</td><td>${esc(e.title)}</td>
-    <td>${stepper(e)} <small class="muted">${esc(e.stage_status)}</small></td>
-    <td class="ep-actions"><button class="linklike" data-episode="${e.episode_id}">open →</button>
-      <button class="linklike del" data-del-ep="${e.episode_id}" title="delete episode">🗑</button></td></tr>`;
+async function newEpisode() {
+  const title = prompt("Episode title (optional):") || "";
+  try { const e = await jpost("/api/episodes", { channel_id: S.channelId, title }); await reloadEpisodes(); go(`c/${S.channelId}/ep/${e.episode_id}`); }
+  catch (err) { toast(err.message, "err"); }
 }
 async function delEpisode(id) {
-  if (!confirm("Delete this episode and its generated media? This can't be undone.")) return;
-  try {
-    await api(`/api/episodes/${id}`, { method: "DELETE" });
-    if (!$("#drawer").hidden) closeDrawer();
-    refreshEpisodes(); refreshSummary();
-  } catch (err) { alert("Error: " + err.message); }
+  if (!confirm("Delete this episode and its media?")) return;
+  try { await jdel(`/api/episodes/${id}`); await reloadEpisodes(); toast("Episode deleted"); render(); }
+  catch (err) { toast(err.message, "err"); }
 }
-async function newEpisode(channelId) {
-  const title = prompt("Episode title (optional):") || "";
-  try { await jpost("/api/episodes", { channel_id: channelId, title }); refreshEpisodes(); refreshSummary(); }
-  catch (err) { alert("Error: " + err.message); }
-}
-let curEpisode = null;
-async function openEpisode(id) {
-  curEpisode = await api(`/api/episodes/${id}`);
-  renderEpisode();
-  $("#backdrop").hidden = false; $("#drawer").hidden = false;
-}
+async function reloadEpisodes() { S.episodes = await jget(`/api/episodes?channel_id=${S.channelId}`); }
 
-const SHOT_LABEL = { broll: "b-roll", still_kenburns: "Ken Burns", lipsync_still: "lip-sync", hero_video: "hero video" };
-
-function ideaCard(idea, i, canApprove) {
-  const beats = (idea.beats || []).map((b) => `<li>${esc(b)}</li>`).join("");
-  const badge = idea.model_label ? `<span class="model-badge">${esc(idea.model_label)}</span>` : "";
-  return `<div class="idea-card">
-    <div class="idea-title"><b>${esc(idea.title || "Untitled")}</b>${badge}</div>
-    <div class="idea-log">${esc(idea.logline || "")}</div>
-    ${idea.hook ? `<div class="idea-hook"><span>hook</span> ${esc(idea.hook)}</div>` : ""}
-    ${beats ? `<ul class="idea-beats">${beats}</ul>` : ""}
-    ${canApprove ? `<button class="mini" data-approve-idea="${curEpisode.episode_id}" data-choice="${i}">use this ✓</button>` : ""}
-  </div>`;
-}
-
-function sceneRow(s) {
-  const dlg = (s.dialogue || []).length ? `💬 ${s.dialogue.length}` : "";
-  return `<div class="scene-row">
-    <div class="scene-seq">${s.seq + 1}</div>
-    <div class="scene-body">
-      <div class="scene-head"><b>${esc(s.heading || "scene")}</b>
-        <span class="shot shot-${s.shot_type}">${SHOT_LABEL[s.shot_type] || s.shot_type}</span>
-        <small>${s.duration_s}s ${dlg}</small></div>
-      <div class="scene-action">${esc(s.action || "")}</div>
-      ${s.narration ? `<div class="scene-vo">🎙 ${esc(s.narration)}</div>` : ""}
-      ${(s.dialogue || []).map((d) => `<div class="scene-line"><b>${esc(nameOf(d.speaker))}</b>: ${esc(d.line)}${d.delivery ? ` <em>(${esc(d.delivery)})</em>` : ""}</div>`).join("")}
-    </div></div>`;
-}
-function nameOf(cid) { const c = characters.find((x) => x.character_id === cid); return c ? c.name : "?"; }
-
-function refTile(s) {
-  const ri = s.reference_image || {};
-  const img = s.still_url
-    ? `<img src="${s.still_url}?t=${Date.now()}" />`
-    : `<div class="ph-tile">${ri.status === "failed" ? "✕ failed" : "—"}</div>`;
-  const hero = s.shot_type === "hero_video" && s.clip_url ? `<span class="clip-tag">▶ clip</span>` : "";
-  return `<div class="ref-tile">
-    <div class="rt-img">${img}${hero}</div>
-    <div class="rt-meta"><span class="shot shot-${s.shot_type}">${SHOT_LABEL[s.shot_type] || s.shot_type}</span>
-      <small>#${s.seq + 1}</small>
-      <button class="linklike" data-reroll="${curEpisode.episode_id}" data-seq="${s.seq}">re-roll</button></div>
-  </div>`;
-}
-
-function stagePanel(e) {
-  const busy = e.stage_status === "generating";
-  const err = e.stage_error ? `<div class="err-banner">${esc(e.stage_error)}</div>` : "";
-  const est = Number(e.stage_estimate_usd || 0).toFixed(2);
-  // REFS — preview one, then batch the rest
-  if (e.stage === "refs") {
-    const unit = Number(e.image_unit_cost || 0);
-    const previewCost = unit.toFixed(3);
-    const batchN = Math.max(0, e.scene_count - 1);
-    const batchCost = (batchN * unit).toFixed(2);
-    const styleBox = `<label class="brief-label">Style note <small>(optional — applied to every reference image)</small>
-      <textarea id="style-note" rows="2" placeholder="e.g. warmer lighting; more cinematic wide shots; less saturated; softer film grain">${esc(e.style_note || "")}</textarea></label>`;
-    // preview ready, not yet batched → approve the look or tweak the style note
-    if (e.stage_status === "awaiting_review" && !e.refs_batch_done) {
-      const p = e.scenes.find((s) => s.still_url) || e.scenes[0] || {};
-      const pimg = p.still_url ? `<img class="preview-img" src="${p.still_url}?t=${Date.now()}"/>` : `<div class="ph-tile big">preview failed — regenerate</div>`;
-      return `${err}<div class="section-title">Preview — approve the look before generating all ${e.scene_count} images</div>
-        <div class="preview-cap">Scene ${(p.seq ?? 0) + 1}: ${esc(p.heading || "")} · ${esc((p.cast_present || []).length ? "features cast" : "no cast")}</div>
-        <div class="preview-wrap">${pimg}</div>
-        ${styleBox}
-        <div class="gate-row">
-          <button data-refs-batch="${e.episode_id}">✓ Looks good — generate all ${batchN} more (~$${batchCost})</button>
-          <button class="ghost" data-run-refs="${e.episode_id}">↻ regenerate preview (~$${previewCost})</button>
-        </div>`;
-    }
-    // full batch done → review grid + approve
-    if (e.stage_status === "awaiting_review" && e.refs_batch_done) {
-      return `${err}<div class="section-title">Reference images (${e.refs_done_count}/${e.scene_count}) — re-roll any weak frame before video</div>
-        <div class="ref-grid">${e.scenes.map(refTile).join("")}</div>
-        <div class="gate-row"><button data-approve-generic="${e.episode_id}">Approve references ✓</button>
-          <button class="ghost" data-run-refs="${e.episode_id}">↻ start over (new preview)</button></div>`;
-    }
-    // initial → generate the single preview
-    return `${err}<div class="section-title">Reference images — preview first</div>
-      <p class="muted">Generate ONE preview to approve the look (and tweak the style), then batch the rest. ~$${previewCost}/image via Gemini.</p>
-      ${styleBox}
-      <button data-run-refs="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : `🎨 Generate preview image (~$${previewCost})`}</button>`;
-  }
-  // SCENES
-  if (e.stage === "scenes") {
-    const hero = e.scenes.filter((s) => s.shot_type === "hero_video").length;
-    if (e.stage_status === "awaiting_review") {
-      return `${err}${e.rough_cut_url ? `<video controls preload="metadata" src="${e.rough_cut_url}?t=${Date.now()}"></video>` : ""}
-        <div class="section-title">Silent rough cut — ${hero} hero video, rest Ken Burns (audio comes next)</div>
-        <div class="ref-grid">${e.scenes.map(refTile).join("")}</div>
-        <div class="gate-row"><button data-approve-generic="${e.episode_id}">Approve cut ✓</button>
-          <button class="ghost" data-run-paid="${e.episode_id}">↻ re-render (~$${est})</button></div>`;
-    }
-    return `${err}<div class="section-title">Render scenes</div>
-      <p class="muted">Generate motion: <b>${hero}</b> hero-video shot(s); the rest use free Ken Burns on their stills, then stitch a silent rough cut with crossfades. ≈ <b>$${est}</b>.</p>
-      <button data-run-paid="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : `🎬 Render scenes (~$${est})`}</button>`;
-  }
-  // AUDIO
-  if (e.stage === "audio") {
-    if (e.stage_status === "awaiting_review") {
-      return `${err}${e.audio_cut_url ? `<video controls preload="metadata" src="${e.audio_cut_url}?t=${Date.now()}"></video>` : ""}
-        <div class="section-title">Voiced cut — review with 🔊 sound. Re-roll a scene if a voice is off.</div>
-        <div class="ref-grid">${e.scenes.map(refTile).join("")}</div>
-        <div class="gate-row"><button data-approve-generic="${e.episode_id}">Approve audio ✓</button>
-          <button class="ghost" data-run-paid="${e.episode_id}">↻ regenerate all (~$${est})</button></div>`;
-    }
-    return `${err}<div class="section-title">Audio — voices + music</div>
-      <p class="muted">Narrator VO + each character's voice (their locked Voice DNA) + a music bed; lip-sync on talking shots, then a voiced cut. ≈ <b>$${est}</b>.</p>
-      <button data-run-paid="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : `🔊 Generate voices + music (~$${est})`}</button>`;
-  }
-  // ASSEMBLY
-  if (e.stage === "assembly") {
-    if (e.stage_status === "awaiting_review") {
-      return `${err}${e.final_url ? `<video controls preload="metadata" src="${e.final_url}?t=${Date.now()}"></video>` : ""}
-        <div class="section-title">Final cut — last look</div>
-        <div class="gate-row"><button data-approve-generic="${e.episode_id}">Approve &amp; finish ✓</button>
-          ${e.final_url ? `<a class="ghost dl" href="${e.final_url}" download>⬇ download</a>` : ""}</div>`;
-    }
-    return `${err}<div class="section-title">Assemble final</div>
-      <p class="muted">Build the final cut + editable timeline (EDL). Free — no generation spend.</p>
-      <button data-run="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "🎬 Assemble final"}</button>`;
-  }
-  // DONE
-  if (e.stage === "done") {
-    return `<div class="done-banner">✓ Episode complete</div>
-      ${e.final_url ? `<video controls preload="metadata" src="${e.final_url}?t=${Date.now()}"></video>
-        <div class="gate-row"><a class="dl-btn" href="${e.final_url}" download>⬇ Download episode</a></div>` : ""}`;
-  }
-  // IDEA
-  if (e.stage === "idea") {
-    const briefBox = `<label class="brief-label">Idea brief <small>(optional — steer what gets generated)</small>
-      <textarea id="idea-brief" rows="2" placeholder="e.g. a rainy-night stakeout; introduce a cat burglar villain; keep it lighthearted">${esc(e.idea_brief || "")}</textarea></label>`;
-    if (e.stage_status === "awaiting_review" && e.idea_candidates.length) {
-      return `${err}<div class="section-title">Pick an episode idea — one from each model (the winner writes the script)</div>
-        <div class="idea-grid">${e.idea_candidates.map((x, i) => ideaCard(x, i, true)).join("")}</div>
-        ${briefBox}
-        <div class="gate-row"><button class="ghost" data-run-idea="${e.episode_id}">↻ regenerate ideas</button></div>`;
-    }
-    return `${err}<div class="section-title">Ideate — a panel of models</div>
-      <p class="muted">All models propose an idea at once (Opus 4.8 · GPT-5.5 · DeepSeek V4 Pro · GLM 5.2), grounded in the channel premise + cast and steered by your brief. Pick the best — that model writes the script.</p>
-      ${briefBox}
-      <button data-run-idea="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✨ Generate ideas (all models)"}</button>`;
-  }
-  // SCRIPT
-  if (e.stage === "script") {
-    const chosen = e.idea && e.idea.title ? `<div class="chosen">📌 <b>${esc(e.idea.title)}</b> — ${esc(e.idea.logline || "")}</div>` : "";
-    if (e.stage_status === "awaiting_review" && e.scenes.length) {
-      return `${err}${chosen}<div class="section-title">Script — ${e.scenes.length} scenes</div>
-        <div class="scene-list">${e.scenes.map(sceneRow).join("")}</div>
-        <div class="gate-row">
-          <button data-approve-script="${e.episode_id}">Approve script ✓</button>
-          <button class="ghost" data-run="${e.episode_id}">↻ rewrite</button>
-        </div>`;
-    }
-    return `${err}${chosen}<div class="section-title">Script</div>
-      <p class="muted">Expand the idea into a scene-by-scene script (dialogue, narration, shot types). Text only.</p>
-      <button data-run="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✍ Write script"}</button>`;
-  }
-  return `${err}<div class="stage-next">Stage <b>${esc(e.stage)}</b>.</div>`;
-}
-
-function renderEpisode() {
-  const e = curEpisode;
-  $("#drawer-body").innerHTML = `
-    <h2>${esc(e.title)}</h2>
-    <div class="fsn">${esc(e.channel_name)} · episode ${e.number} · <small>${esc(e.stage)}/${esc(e.stage_status)}</small></div>
-    ${stepper(e)}
-    <div class="ep-meta"><span>${e.cast.length} cast</span> · <span>${e.scene_count} scenes</span> · <span>writer ${esc(e.writer_model || "—")}</span> · <span>spent $${Number(e.spent_usd || 0).toFixed(3)}</span></div>
-    ${stagePanel(e)}
-    ${(e.history || []).length ? `<div class="section-title">History</div><div class="timeline">${e.history.slice().reverse().map((h) => `<div class="ev"><div class="name">${esc(h.event)}</div><div class="det">${esc(JSON.stringify(h.detail))}</div></div>`).join("")}</div>` : ""}`;
-}
-
-async function epAction(fn) {
-  try { curEpisode = await fn(); renderEpisode(); refreshEpisodes(); refreshSummary(); }
-  catch (err) {
-    alert("Error: " + err.message);
-    // clear the optimistic "working…" state by reloading the episode's real state
-    if (curEpisode && curEpisode.episode_id) {
-      try { curEpisode = await api(`/api/episodes/${curEpisode.episode_id}`); renderEpisode(); } catch (e) {}
-    }
-  }
-}
-
-// ---------- events + polling ----------
-function closeDrawer() { $("#backdrop").hidden = true; $("#drawer").hidden = true; }
-$("#drawer-close").addEventListener("click", closeDrawer);
-$("#backdrop").addEventListener("click", closeDrawer);
-document.addEventListener("click", (e) => {
-  const t = e.target;
-  if (t.dataset.editActor) return openActor(t.dataset.editActor);
-  if (t.dataset.upload) { uploadTarget = t.dataset.upload; fileInput.click(); return; }
-  if (t.dataset.actor) return saveActor(t.dataset.actor);
-  if (t.dataset.newEp) return newEpisode(t.dataset.newEp);
-  if (t.dataset.editChannel) return openChannel(t.dataset.editChannel);
-  if (t.dataset.channel) return saveChannel(t.dataset.channel);
-  if (t.dataset.delEp) return delEpisode(t.dataset.delEp);
-  if (t.dataset.episode) return openEpisode(t.dataset.episode);
-  if (t.dataset.runIdea) {
-    const brief = ($("#idea-brief") ? $("#idea-brief").value : "").trim();
-    if (curEpisode) { curEpisode.stage_status = "generating"; curEpisode.idea_brief = brief; renderEpisode(); }
-    return epAction(() => jpost(`/api/episodes/${t.dataset.runIdea}/run`, { brief }));
-  }
-  if (t.dataset.run) { if (curEpisode) { curEpisode.stage_status = "generating"; renderEpisode(); } return epAction(() => jpost(`/api/episodes/${t.dataset.run}/run`, {})); }
-  if (t.dataset.runPaid) {
-    const est = curEpisode ? Number(curEpisode.stage_estimate_usd || 0).toFixed(2) : "?";
-    if (!confirm(`This runs a PAID stage — approx $${est} of generation. Continue?`)) return;
-    if (curEpisode) { curEpisode.stage_status = "generating"; renderEpisode(); }
-    return epAction(() => jpost(`/api/episodes/${t.dataset.runPaid}/run`, {}));
-  }
-  if (t.dataset.runRefs) {
-    const sn = ($("#style-note") ? $("#style-note").value : "").trim();
-    if (curEpisode) { curEpisode.stage_status = "generating"; curEpisode.style_note = sn; renderEpisode(); }
-    return epAction(() => jpost(`/api/episodes/${t.dataset.runRefs}/run`, { style_note: sn }));
-  }
-  if (t.dataset.refsBatch) {
-    const sn = ($("#style-note") ? $("#style-note").value : "").trim();
-    const n = curEpisode ? Math.max(0, curEpisode.scene_count - 1) : 0;
-    const cost = curEpisode ? (n * Number(curEpisode.image_unit_cost || 0)).toFixed(2) : "?";
-    if (!confirm(`Generate ${n} more reference images (~$${cost})? The preview look will be applied to all.`)) return;
-    if (curEpisode) { curEpisode.stage_status = "generating"; renderEpisode(); }
-    return epAction(() => jpost(`/api/episodes/${t.dataset.refsBatch}/refs/batch`, { style_note: sn }));
-  }
-  if (t.dataset.reroll) return epAction(() => jpost(`/api/episodes/${t.dataset.reroll}/scene/${t.dataset.seq}/reroll`, {}));
-  if (t.dataset.approveIdea) return epAction(() => jpost(`/api/episodes/${t.dataset.approveIdea}/approve`, { choice: Number(t.dataset.choice) }));
-  if (t.dataset.approveScript) return epAction(() => jpost(`/api/episodes/${t.dataset.approveScript}/approve`, {}));
-  if (t.dataset.approveGeneric) return epAction(() => jpost(`/api/episodes/${t.dataset.approveGeneric}/approve`, {}));
-  if (t.dataset.epf) { epFilter = t.dataset.epf; renderEpFilters(); refreshEpisodes(); }
+/* file upload for character reference */
+let uploadTargetId = null;
+$("#hidden-file").addEventListener("change", async (ev) => {
+  const f = ev.target.files[0]; if (!f || !uploadTargetId) return;
+  const b64 = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(f); });
+  try { await jpost(`/api/characters/${uploadTargetId}/reference`, { filename: f.name, data_base64: b64 }); S.characters = await jget("/api/characters"); toast("Photo added", "ok"); render(); }
+  catch (err) { toast(err.message, "err"); }
+  ev.target.value = ""; uploadTargetId = null;
 });
+function uploadRef(id) { uploadTargetId = id; $("#hidden-file").click(); }
 
-async function refreshAll() { try { await Promise.all([refreshSummary(), refreshCharacters(), refreshChannels(), refreshEpisodes()]); } catch (e) {} }
-refreshAll();
-setInterval(refreshSummary, 8000);
+/* ---------------- modals ---------------- */
+function openModal(title, bodyHtml, onSave, saveLabel = "Save") {
+  const root = $("#modal-root");
+  root.innerHTML = `<div class="scrim"><div class="modal"><div class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn" data-mclose>${icon("x")}</button></div>
+    <div class="modal-body">${bodyHtml}<p class="hint" id="m-msg"></p></div>
+    <div class="modal-foot"><button class="btn btn-ghost" data-mclose>Cancel</button><button class="btn btn-primary" id="m-save">${saveLabel}</button></div></div></div>`;
+  const close = () => { root.innerHTML = ""; };
+  root.querySelectorAll("[data-mclose]").forEach((b) => b.onclick = close);
+  $("#m-save").onclick = async () => { try { await onSave(); close(); } catch (e) { $("#m-msg").className = "hint err"; $("#m-msg").textContent = e.message; } };
+}
+const castChecks = (selected = []) => S.characters.map((c) => `<label><input type="checkbox" value="${c.character_id}" ${selected.includes(c.character_id) ? "checked" : ""}/> ${esc(c.name)}</label>`).join("") || `<span class="muted">Create characters first.</span>`;
+
+function modalChannel(ch) {
+  const c = ch || {};
+  const sel = (ch && ch.cast || []).map((m) => m.character_id);
+  openModal(ch ? "Edit channel" : "New channel", `
+    <div class="row-2"><div class="field"><label>Name</label><input id="f-name" value="${esc(c.name || "")}" placeholder="Zruv Adventures"/></div>
+      <div class="field"><label>Platform</label><input id="f-plat" value="${esc(c.platform || "youtube")}"/></div></div>
+    <div class="row-2"><div class="field"><label>Format</label><select id="f-fmt"><option value="long_form" ${c.format === "long_form" ? "selected" : ""}>long_form</option><option value="short_form" ${c.format === "short_form" ? "selected" : ""}>short_form</option></select></div>
+      <div class="field"><label>Art style</label><input id="f-style" value="${esc(c.art_style || "")}" placeholder="3D Pixar comic style, vibrant"/></div></div>
+    <div class="field"><label>Premise</label><textarea id="f-prem" rows="3" placeholder="What the series is about…">${esc(c.premise || "")}</textarea></div>
+    <div class="row-3"><div class="field"><label>Scenes</label><input type="number" id="f-scenes" value="${c.target_scene_count || 16}"/></div>
+      <div class="field"><label>Duration (s)</label><input type="number" id="f-dur" value="${c.target_duration_s || 120}"/></div>
+      <div class="field"><label>Video budget</label><input type="number" id="f-budget" value="${c.video_budget ?? 3}"/></div></div>
+    <div class="row-2"><div class="field"><label>Writer provider</label><input id="f-writer" value="${esc(c.writer_provider || "openrouter")}"/></div>
+      <div class="field"><label>Narrator voice</label><input id="f-narr" value="${esc(c.narrator_voice_id || "")}" placeholder="e.g. Brian"/></div></div>
+    <div class="field"><label>Cast (first checked = lead)</label><div class="checks">${castChecks(sel)}</div></div>`,
+    async () => {
+      const picked = [...document.querySelectorAll(".modal .checks input:checked")].map((i) => i.value);
+      const cast = picked.map((id, i) => ({ character_id: id, role: i === 0 ? "lead" : "sidekick" }));
+      const body = { name: $("#f-name").value.trim(), platform: $("#f-plat").value.trim(), format: $("#f-fmt").value, art_style: $("#f-style").value.trim(), premise: $("#f-prem").value.trim(), target_scene_count: +$("#f-scenes").value, target_duration_s: +$("#f-dur").value, video_budget: +$("#f-budget").value, writer_provider: $("#f-writer").value.trim(), narrator_voice_id: $("#f-narr").value.trim(), cast };
+      if (ch) await jpatch(`/api/channels/${ch.channel_id}`, body); else { const nc = await jpost("/api/channels", body); S.channelId = nc.channel_id; location.hash = `c/${nc.channel_id}/overview`; }
+      await loadCore(); await reloadEpisodes(); render();
+    }, ch ? "Save" : "Create");
+}
+
+function modalCharacter(c) {
+  const p = (c && c.personality) || {}, v = (c && c.voice) || {};
+  openModal(c ? "Edit character" : "New character", `
+    <div class="row-2"><div class="field"><label>Name</label><input id="f-name" value="${esc(c ? c.name : "")}"/></div>
+      <div class="field"><label>Species</label><select id="f-species"><option value="person" ${c && c.species === "person" ? "selected" : ""}>person</option><option value="animal" ${c && c.species === "animal" ? "selected" : ""}>animal</option></select></div></div>
+    <div class="field"><label>Look / appearance <small>(reference photos override this)</small></label><textarea id="f-dna" rows="2">${esc(c ? c.dna_prompt : "")}</textarea></div>
+    <div class="row-2"><div class="field"><label>Voice provider</label><input id="f-vprov" value="${esc(v.provider || "elevenlabs")}"/></div>
+      <div class="field"><label>Voice ID</label><input id="f-vid" value="${esc(v.voice_id || "")}" placeholder="e.g. Rachel"/></div></div>
+    <div class="field"><label>Backstory / personality</label><textarea id="f-back" rows="3">${esc(p.backstory || "")}</textarea></div>
+    <div class="row-2"><div class="field"><label>Traits (comma-sep)</label><input id="f-traits" value="${esc((p.traits || []).join(", "))}"/></div>
+      <div class="field"><label>Speech style</label><input id="f-speech" value="${esc(p.speech_style || "")}"/></div></div>`,
+    async () => {
+      const body = { name: $("#f-name").value.trim(), species: $("#f-species").value, dna_prompt: $("#f-dna").value.trim(),
+        voice: { provider: $("#f-vprov").value.trim(), voice_id: $("#f-vid").value.trim() },
+        personality: { backstory: $("#f-back").value.trim(), traits: splitList($("#f-traits").value), speech_style: $("#f-speech").value.trim(), catchphrases: (p.catchphrases || []), mannerisms: (p.mannerisms || []) } };
+      if (c) await jpatch(`/api/characters/${c.character_id}`, body); else await jpost("/api/characters", body);
+      S.characters = await jget("/api/characters"); render();
+    }, c ? "Save" : "Create");
+}
+
+/* ---------------- init ---------------- */
+(async function init() {
+  try {
+    await loadCore();
+    if (S.channels.length && !S.channelId) S.channelId = (parseHash().cid) || S.channels[0].channel_id;
+    if (S.channelId) await reloadEpisodes();
+    await route();
+    // light refresh of core every 15s (channels/characters/keys)
+    setInterval(async () => { try { await loadCore(); if (S.channelId) await reloadEpisodes(); if (!S.ep) render(); } catch (e) {} }, 15000);
+  } catch (e) { $("#app").innerHTML = `<div class="empty" style="padding-top:80px">${icon("x")}<div>Failed to load: ${esc(e.message)}</div></div>`; }
+})();

@@ -4,99 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Influencer Factory — Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo">★</span>
-      <div>
-        <h1>AI Influencer Factory</h1>
-        <p class="sub">actors · channels · staged episode production</p>
-      </div>
-    </div>
-    <div class="env" id="env-chips"><!-- chips injected --></div>
-  </header>
-
-  <section class="stats" id="stats"><!-- stat cards injected --></section>
-
-  <main>
-    <!-- ACTORS -->
-    <section class="panel actors">
-      <div class="panel-head"><h2>Characters (actors)</h2>
-        <button class="ghost" id="new-char-btn">+ New character</button></div>
-      <div id="char-grid" class="char-grid"></div>
-      <form id="char-form" class="inline-form" hidden>
-        <div class="row2">
-          <label>Name <input type="text" id="c-name" placeholder="Jango" required /></label>
-          <label>Species
-            <select id="c-species"><option value="person">person</option><option value="animal">animal</option></select></label>
-        </div>
-        <label>Look / DNA prompt <small>(describes the actor's appearance)</small>
-          <textarea id="c-dna" rows="2" placeholder="a fluffy golden retriever puppy, glossy coat, expressive brown eyes, photorealistic"></textarea></label>
-        <div class="post-actions">
-          <button type="submit" id="char-save">Create</button>
-          <button type="button" class="ghost" id="char-cancel">Cancel</button>
-        </div>
-        <p class="hint" id="char-msg"></p>
-      </form>
-    </section>
-
-    <!-- CHANNELS -->
-    <section class="panel channels">
-      <div class="panel-head"><h2>Channels (series)</h2>
-        <button class="ghost" id="new-channel-btn">+ New channel</button></div>
-      <div id="channel-grid" class="channel-grid"></div>
-      <form id="channel-form" class="inline-form" hidden>
-        <div class="row2">
-          <label>Name <input type="text" id="ch-name" placeholder="Django, P.I." required /></label>
-          <label>Platform
-            <select id="ch-platform"><option>youtube</option><option>instagram</option><option>tiktok</option></select></label>
-        </div>
-        <div class="row2">
-          <label>Format
-            <select id="ch-format"><option value="long_form">long_form</option><option value="short_form">short_form</option></select></label>
-          <label>Art style <input type="text" id="ch-style" placeholder="noir cinematic" /></label>
-        </div>
-        <label>Premise <small>(the show's concept — drives idea generation)</small>
-          <textarea id="ch-premise" rows="2" placeholder="a golden-retriever detective and his sidekick Zoom solve a mystery each episode, Sherlock-noir tone"></textarea></label>
-        <div class="opts row">
-          <label class="opt col"><span>Scenes</span><input type="number" id="ch-scenes" value="16" min="1" max="40" /></label>
-          <label class="opt col"><span>Duration (s)</span><input type="number" id="ch-dur" value="120" min="5" /></label>
-          <label class="opt col"><span>Video budget</span><input type="number" id="ch-budget" value="4" min="0" /></label>
-          <label class="opt col"><span>Writer</span>
-            <select id="ch-writer"><option value="anthropic">anthropic</option><option value="gemini">gemini</option><option value="openai">openai</option></select></label>
-        </div>
-        <label>Cast <small>(pick the recurring actors; first checked = lead)</small></label>
-        <div id="cast-picker" class="cast-picker"></div>
-        <div class="post-actions">
-          <button type="submit" id="channel-save">Create channel</button>
-          <button type="button" class="ghost" id="channel-cancel">Cancel</button>
-        </div>
-        <p class="hint" id="channel-msg"></p>
-      </form>
-    </section>
-
-    <!-- EPISODES -->
-    <section class="panel episodes">
-      <div class="panel-head"><h2>Episodes</h2>
-        <div class="filters" id="ep-filters"></div></div>
-      <div class="table-wrap">
-        <table id="ep-table">
-          <thead><tr><th>Channel</th><th>#</th><th>Title</th><th>Stage</th><th></th></tr></thead>
-          <tbody id="ep-body"></tbody>
-        </table>
-        <p class="empty" id="ep-empty">No episodes yet — create a channel, then add an episode.</p>
-      </div>
-    </section>
-  </main>
-
-  <div class="drawer-backdrop" id="backdrop" hidden></div>
-  <aside class="drawer" id="drawer" hidden>
-    <button class="close" id="drawer-close">✕</button>
-    <div id="drawer-body"></div>
-  </aside>
-
+  <div id="app"></div>
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+  <input type="file" id="hidden-file" accept="image/*" hidden />
   <script src="/app.js"></script>
 </body>
 </html>
