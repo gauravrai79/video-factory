@@ -273,8 +273,9 @@ const SHOT_LABEL = { broll: "b-roll", still_kenburns: "Ken Burns", lipsync_still
 
 function ideaCard(idea, i, canApprove) {
   const beats = (idea.beats || []).map((b) => `<li>${esc(b)}</li>`).join("");
+  const badge = idea.model_label ? `<span class="model-badge">${esc(idea.model_label)}</span>` : "";
   return `<div class="idea-card">
-    <div class="idea-title"><b>${esc(idea.title || "Untitled")}</b></div>
+    <div class="idea-title"><b>${esc(idea.title || "Untitled")}</b>${badge}</div>
     <div class="idea-log">${esc(idea.logline || "")}</div>
     ${idea.hook ? `<div class="idea-hook"><span>hook</span> ${esc(idea.hook)}</div>` : ""}
     ${beats ? `<ul class="idea-beats">${beats}</ul>` : ""}
@@ -377,15 +378,15 @@ function stagePanel(e) {
     const briefBox = `<label class="brief-label">Idea brief <small>(optional — steer what gets generated)</small>
       <textarea id="idea-brief" rows="2" placeholder="e.g. a rainy-night stakeout; introduce a cat burglar villain; keep it lighthearted">${esc(e.idea_brief || "")}</textarea></label>`;
     if (e.stage_status === "awaiting_review" && e.idea_candidates.length) {
-      return `${err}<div class="section-title">Pick an episode idea</div>
+      return `${err}<div class="section-title">Pick an episode idea — one from each model (the winner writes the script)</div>
         <div class="idea-grid">${e.idea_candidates.map((x, i) => ideaCard(x, i, true)).join("")}</div>
         ${briefBox}
         <div class="gate-row"><button class="ghost" data-run-idea="${e.episode_id}">↻ regenerate ideas</button></div>`;
     }
-    return `${err}<div class="section-title">Ideate</div>
-      <p class="muted">Generate episode concepts from the channel premise + cast — optionally steered by your brief. Text only — near-free.</p>
+    return `${err}<div class="section-title">Ideate — a panel of models</div>
+      <p class="muted">All models propose an idea at once (Opus 4.8 · GPT-5.5 · DeepSeek V4 Pro · GLM 5.2), grounded in the channel premise + cast and steered by your brief. Pick the best — that model writes the script.</p>
       ${briefBox}
-      <button data-run-idea="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✨ Generate ideas"}</button>`;
+      <button data-run-idea="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✨ Generate ideas (all models)"}</button>`;
   }
   // SCRIPT
   if (e.stage === "script") {

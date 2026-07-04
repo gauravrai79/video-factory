@@ -251,13 +251,16 @@ def run_stage(store, ep: Episode, *, brief: str | None = None) -> Episode:
         if brief is not None:
             ep.idea_brief = brief.strip()
         recent = [e.title for e in eps.list(_tenant_of(ep, eps), ch.channel_id) if e.episode_id != ep.episode_id]
-        res = writer.ideate(ch, cast, recent_titles=recent, brief=(ep.idea_brief or None), model=ep.writer_model)
+        # Multi-model panel: every model proposes ideas concurrently so you pick the best across them.
+        res = writer.ideate_panel(ch, cast, recent_titles=recent, brief=(ep.idea_brief or None))
         if not res.ok:
             return _fail(eps, ep, res.error or "ideation failed")
         ep.idea_candidates = res.data["ideas"]
         _bill(ep, res)
         ep.stage_status = StageStatus.AWAITING_REVIEW.value
-        ep.log("ideate", {"n": len(ep.idea_candidates), "model": res.model, "stub": res.stubbed})
+        ep.log("ideate", {"n": len(ep.idea_candidates),
+                          "models": [c.get("model_label") for c in ep.idea_candidates],
+                          "cost_usd": res.cost_usd})
 
     elif stage == Stage.SCRIPT:
         if not ep.idea:
@@ -424,7 +427,10 @@ def approve_stage(store, ep: Episode, *, payload: dict[str, Any] | None = None) 
         ep.idea = chosen
         ep.title = (chosen.get("title") or ep.title)
         ep.logline = chosen.get("logline", "")
-        ep.log("idea_approved", {"title": ep.title})
+        # Script with the SAME model that authored the chosen idea (falls back to channel default).
+        if chosen.get("model"):
+            ep.writer_model = chosen["model"]
+        ep.log("idea_approved", {"title": ep.title, "model": chosen.get("model_label")})
     elif stage == Stage.SCRIPT:
         if payload.get("scenes"):                 # accept human-edited scenes
             ep.scenes = payload["scenes"]

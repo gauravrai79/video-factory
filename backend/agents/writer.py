@@ -108,6 +108,59 @@ def _channel_system(channel, cast_chars: list) -> str:
 
 # --------------------------------------------------------------------------- ideate
 
+# The default multi-model ideation panel: each model proposes ideas concurrently so you can pick the
+# best across models. (label, OpenRouter model id, reasoning effort). Override via VF_IDEA_PANEL
+# (comma-separated model ids) if you want a different lineup.
+DEFAULT_IDEA_PANEL = [
+    ("Opus 4.8", "anthropic/claude-opus-4.8", None),
+    ("GPT-5.5 high", "openai/gpt-5.5", "high"),
+    ("DeepSeek V4 Pro", "deepseek/deepseek-v4-pro", None),
+    ("GLM 5.2", "z-ai/glm-5.2", None),
+]
+
+
+def idea_panel() -> list[tuple[str, str, str | None]]:
+    override = os.environ.get("VF_IDEA_PANEL", "").strip()
+    if override:
+        return [(mid.split("/")[-1], mid.strip(), None) for mid in override.split(",") if mid.strip()]
+    return DEFAULT_IDEA_PANEL
+
+
+def ideate_panel(channel, cast_chars: list, *, brief: str | None = None,
+                 recent_titles: list[str] | None = None, panel: list | None = None,
+                 n_per_model: int = 1) -> WriterResult:
+    """Run every model in the panel concurrently; return all their ideas, each tagged with its
+    source model. Failures are skipped so a flaky model doesn't block the others."""
+    panel = panel or idea_panel()
+    if not _key():
+        ideas = []
+        for label, mid, _ in panel:
+            for it in _stub_ideate(channel, n_per_model, brief).data["ideas"][:n_per_model]:
+                ideas.append({**it, "model": mid, "model_label": label})
+        return WriterResult(ok=True, data={"ideas": ideas}, model="panel", stubbed=True)
+
+    import concurrent.futures as cf
+
+    def _one(item):
+        label, mid, eff = item
+        r = ideate(channel, cast_chars, brief=brief, recent_titles=recent_titles,
+                   n=n_per_model, model=mid, reasoning_effort=eff)
+        return label, mid, r
+
+    ideas, cost, failed = [], 0.0, []
+    with cf.ThreadPoolExecutor(max_workers=max(1, len(panel))) as ex:
+        for label, mid, r in ex.map(_one, panel):
+            if r.ok and r.data.get("ideas"):
+                cost += float(r.cost_usd or 0.0)
+                for it in r.data["ideas"][:n_per_model]:
+                    ideas.append({**it, "model": mid, "model_label": label})
+            else:
+                failed.append(label)
+    if not ideas:
+        return WriterResult(ok=False, model="panel", error=f"all models failed: {', '.join(failed)}")
+    return WriterResult(ok=True, data={"ideas": ideas, "failed": failed}, model="panel", cost_usd=round(cost, 4))
+
+
 def ideate(channel, cast_chars: list, *, recent_titles: list[str] | None = None,
            brief: str | None = None, n: int = 4, model: str | None = None,
            reasoning_effort: str | None = None) -> WriterResult:
