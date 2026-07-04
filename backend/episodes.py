@@ -88,6 +88,8 @@ class Episode:
     idea_candidates: list[dict[str, Any]] = field(default_factory=list)  # ideate output (choose one)
     cast: list[str] = field(default_factory=list)           # resolved character_ids
     scenes: list[dict[str, Any]] = field(default_factory=list)  # list of Scene dicts
+    style_note: str = ""                                    # applied to every scene's still prompt
+    refs_batch_done: bool = False                           # preview approved -> full batch generated
     timeline: dict[str, Any] = field(default_factory=dict)  # the editable EDL (built at assembly)
     history: list[dict[str, Any]] = field(default_factory=list)  # stage/gate action trail
     stage_error: str = ""

@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from .agents import shot_prompt, writer
-from .capabilities import fal_image, fal_video, lipsync as lipsync_cap, music as music_cap, pricing, voice as voice_cap
+from .capabilities import (fal_image, fal_video, lipsync as lipsync_cap, music as music_cap,
+                           or_image as or_image_cap, pricing, voice as voice_cap)
 from .capabilities.fal_video import image_ref
 from .channels import Channel, ChannelStore
 from .characters import Character, CharacterStore
@@ -85,16 +86,30 @@ def _cast_map(cs: CharacterStore, ids: list[str]) -> dict[str, Character]:
     return out
 
 
+def _image_gen(*, prompt: str, output_path: str, reference_image_urls, model: str, safety: int):
+    """Route to OpenRouter (Gemini) or fal based on the model. Same GenResult either way."""
+    if model in pricing.OPENROUTER_IMAGE_MODELS:
+        return or_image_cap.generate_still(prompt=prompt, output_path=output_path,
+                                           reference_image_urls=reference_image_urls, model=model,
+                                           execute=True)
+    return fal_image.generate_still(prompt=prompt, output_path=output_path,
+                                    reference_image_urls=reference_image_urls, model=model,
+                                    safety_tolerance=safety, execute=True)
+
+
 def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
-                     out_dir: Path, *, prompt_override: str | None = None) -> tuple[dict, float]:
+                     out_dir: Path, *, prompt_override: str | None = None,
+                     style_note: str = "") -> tuple[dict, float]:
     present = shot_prompt.scene_cast(scene, cast_map)
     prompt, refs = shot_prompt.reference_still_prompt(scene, present, ch)
     if prompt_override:
         prompt = prompt_override
+    if style_note:
+        prompt = f"{prompt} {style_note}"
     safety = max([c.safety_tolerance for c in present], default=5)
     path = str(out_dir / "stills" / f"{scene['seq']:03d}.png")
-    res = fal_image.generate_still(prompt=prompt, output_path=path, reference_image_urls=refs or None,
-                                   model=pricing.DEFAULT_IMAGE_MODEL, safety_tolerance=safety, execute=True)
+    res = _image_gen(prompt=prompt, output_path=path, reference_image_urls=refs or None,
+                     model=pricing.default_image_model(), safety=safety)
     info = {"path": path if res.success else "", "status": "ok" if res.success else "failed",
             "prompt": prompt, "error": res.error}
     return info, res.cost_usd
@@ -238,8 +253,9 @@ def _assemble_rough(ep: Episode, ch: Channel) -> tuple[bool, str]:
 
 # --------------------------------------------------------------------------- run (generate stage)
 
-def run_stage(store, ep: Episode, *, brief: str | None = None) -> Episode:
-    """Generate the current stage's artifact and park at awaiting_review. `brief` steers ideation."""
+def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str | None = None) -> Episode:
+    """Generate the current stage's artifact and park at awaiting_review. `brief` steers ideation;
+    `style_note` steers reference-image look (applied to the preview + batch)."""
     eps, chs, cs, ch, cast = _ctx(store, ep)
     ep.writer_model = ch.writer_model or writer.default_model()
     ep.stage_status = StageStatus.GENERATING.value
@@ -276,20 +292,22 @@ def run_stage(store, ep: Episode, *, brief: str | None = None) -> Episode:
     elif stage == Stage.REFS:
         if not ep.scenes:
             return _fail(eps, ep, "approve a script before generating reference images")
-        est = stage_estimate(ep)
-        if est > episode_ceiling_usd():
-            return _fail(eps, ep, f"est ${est} over episode ceiling ${episode_ceiling_usd()} (raise VF_EPISODE_CEILING_USD)")
+        if style_note is not None:
+            ep.style_note = style_note.strip()
+        # PREVIEW-FIRST: generate only scene 0 so you can approve the look (or tweak the style note)
+        # before spending on the whole batch.
         cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
         out_dir = _out_dir(ep)
-        spent, failed = 0.0, 0
-        for scene in ep.scenes:
-            info, cost = _gen_scene_still(scene, cast_map, ch, out_dir)
-            scene["reference_image"] = info
-            spent += cost
-            failed += (info["status"] != "ok")
-        ep.spent_usd = round(ep.spent_usd + spent, 4)
+        preview = ep.scenes[0]
+        info, cost = _gen_scene_still(preview, cast_map, ch, out_dir, style_note=ep.style_note)
+        preview["reference_image"] = info
+        # reset any later scenes (a fresh preview invalidates a prior batch)
+        for scene in ep.scenes[1:]:
+            scene["reference_image"] = {}
+        ep.refs_batch_done = False
+        ep.spent_usd = round(ep.spent_usd + cost, 4)
         ep.stage_status = StageStatus.AWAITING_REVIEW.value
-        ep.log("refs", {"scenes": len(ep.scenes), "failed": failed, "cost_usd": round(spent, 4)})
+        ep.log("refs_preview", {"status": info["status"], "cost_usd": round(cost, 4)})
 
     elif stage == Stage.SCENES:
         if not ep.scenes or not all((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
@@ -377,7 +395,8 @@ def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = 
     cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
     out_dir = _out_dir(ep)
     if ep.stage == Stage.REFS.value:
-        info, cost = _gen_scene_still(scene, cast_map, ch, out_dir, prompt_override=prompt_override)
+        info, cost = _gen_scene_still(scene, cast_map, ch, out_dir, prompt_override=prompt_override,
+                                      style_note=ep.style_note)
         scene["reference_image"] = info
         ep.spent_usd = round(ep.spent_usd + cost, 4)
         ep.log("ref_reroll", {"seq": seq, "status": info["status"], "cost_usd": cost})
@@ -406,6 +425,34 @@ def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = 
         ep.log("audio_reroll", {"seq": seq})
     else:
         raise StageError(f"nothing to re-roll at stage '{ep.stage}'")
+    return eps.update(ep)
+
+
+def generate_refs_batch(store, ep: Episode, *, style_note: str | None = None) -> Episode:
+    """After the preview is approved, generate reference images for all remaining scenes."""
+    eps, chs, cs, ch, cast = _ctx(store, ep)
+    if ep.stage != Stage.REFS.value:
+        raise StageError("not at the reference-image stage")
+    if (ep.scenes[0].get("reference_image") or {}).get("status") != "ok":
+        raise StageError("generate a preview first")
+    if style_note is not None:
+        ep.style_note = style_note.strip()
+    cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
+    out_dir = _out_dir(ep)
+    pending = [s for s in ep.scenes if (s.get("reference_image") or {}).get("status") != "ok"]
+    est = round(len(pending) * pricing.image_cost(pricing.default_image_model()), 4)
+    if est > episode_ceiling_usd():
+        raise StageError(f"batch est ${est} over episode ceiling ${episode_ceiling_usd()}")
+    spent, failed = 0.0, 0
+    for scene in pending:
+        info, cost = _gen_scene_still(scene, cast_map, ch, out_dir, style_note=ep.style_note)
+        scene["reference_image"] = info
+        spent += cost
+        failed += (info["status"] != "ok")
+    ep.refs_batch_done = True
+    ep.spent_usd = round(ep.spent_usd + spent, 4)
+    ep.stage_status = StageStatus.AWAITING_REVIEW.value
+    ep.log("refs_batch", {"generated": len(pending), "failed": failed, "cost_usd": round(spent, 4)})
     return eps.update(ep)
 
 
@@ -438,6 +485,8 @@ def approve_stage(store, ep: Episode, *, payload: dict[str, Any] | None = None) 
             raise StageError("no script to approve")
         ep.log("script_approved", {"scenes": len(ep.scenes)})
     elif stage == Stage.REFS:
+        if not ep.refs_batch_done:
+            raise StageError("approve the preview and generate the full batch first")
         if not all((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
             raise StageError("some reference images failed — re-roll them before approving")
         ep.log("refs_approved", {"scenes": len(ep.scenes)})

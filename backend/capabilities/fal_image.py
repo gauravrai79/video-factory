@@ -30,7 +30,8 @@ _IMAGE_ENDPOINTS = {
     "nano-banana-2": ("nano-banana-2", "nano-banana-2/edit", False),
     "nano-banana-pro": ("nano-banana-pro", "nano-banana-pro/edit", False),
     "flux-kontext": ("flux-pro/kontext", "flux-pro/kontext", True),
-    "flux-schnell": ("flux/schnell", "flux/schnell", True),
+    "flux-dev": ("flux/dev", "flux/dev", False),          # text-to-image, good cheap default
+    "flux-schnell": ("flux/schnell", "flux/schnell", False),
 }
 
 

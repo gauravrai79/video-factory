@@ -316,17 +316,38 @@ function stagePanel(e) {
   const busy = e.stage_status === "generating";
   const err = e.stage_error ? `<div class="err-banner">${esc(e.stage_error)}</div>` : "";
   const est = Number(e.stage_estimate_usd || 0).toFixed(2);
-  // REFS
+  // REFS — preview one, then batch the rest
   if (e.stage === "refs") {
-    if (e.stage_status === "awaiting_review") {
-      return `${err}<div class="section-title">Reference images — review (re-roll any weak frame before spending on video)</div>
+    const unit = Number(e.image_unit_cost || 0);
+    const previewCost = unit.toFixed(3);
+    const batchN = Math.max(0, e.scene_count - 1);
+    const batchCost = (batchN * unit).toFixed(2);
+    const styleBox = `<label class="brief-label">Style note <small>(optional — applied to every reference image)</small>
+      <textarea id="style-note" rows="2" placeholder="e.g. warmer lighting; more cinematic wide shots; less saturated; softer film grain">${esc(e.style_note || "")}</textarea></label>`;
+    // preview ready, not yet batched → approve the look or tweak the style note
+    if (e.stage_status === "awaiting_review" && !e.refs_batch_done) {
+      const p = e.scenes[0] || {};
+      const pimg = p.still_url ? `<img class="preview-img" src="${p.still_url}?t=${Date.now()}"/>` : `<div class="ph-tile big">preview failed — regenerate</div>`;
+      return `${err}<div class="section-title">Preview — approve the look before generating all ${e.scene_count} images</div>
+        <div class="preview-wrap">${pimg}</div>
+        ${styleBox}
+        <div class="gate-row">
+          <button data-refs-batch="${e.episode_id}">✓ Looks good — generate all ${batchN} more (~$${batchCost})</button>
+          <button class="ghost" data-run-refs="${e.episode_id}">↻ regenerate preview (~$${previewCost})</button>
+        </div>`;
+    }
+    // full batch done → review grid + approve
+    if (e.stage_status === "awaiting_review" && e.refs_batch_done) {
+      return `${err}<div class="section-title">Reference images (${e.refs_done_count}/${e.scene_count}) — re-roll any weak frame before video</div>
         <div class="ref-grid">${e.scenes.map(refTile).join("")}</div>
         <div class="gate-row"><button data-approve-generic="${e.episode_id}">Approve references ✓</button>
-          <button class="ghost" data-run-paid="${e.episode_id}">↻ regenerate all (~$${est})</button></div>`;
+          <button class="ghost" data-run-refs="${e.episode_id}">↻ start over (new preview)</button></div>`;
     }
-    return `${err}<div class="section-title">Reference images</div>
-      <p class="muted">Generate one identity-locked still per scene (cast DNA + ${esc(e.title ? "channel" : "")} art style). ${e.scene_count} images ≈ <b>$${est}</b>.</p>
-      <button data-run-paid="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : `🎨 Generate reference images (~$${est})`}</button>`;
+    // initial → generate the single preview
+    return `${err}<div class="section-title">Reference images — preview first</div>
+      <p class="muted">Generate ONE preview to approve the look (and tweak the style), then batch the rest. ~$${previewCost}/image via Gemini.</p>
+      ${styleBox}
+      <button data-run-refs="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : `🎨 Generate preview image (~$${previewCost})`}</button>`;
   }
   // SCENES
   if (e.stage === "scenes") {
@@ -447,6 +468,19 @@ document.addEventListener("click", (e) => {
     if (!confirm(`This runs a PAID stage — approx $${est} of generation. Continue?`)) return;
     if (curEpisode) { curEpisode.stage_status = "generating"; renderEpisode(); }
     return epAction(() => jpost(`/api/episodes/${t.dataset.runPaid}/run`, {}));
+  }
+  if (t.dataset.runRefs) {
+    const sn = ($("#style-note") ? $("#style-note").value : "").trim();
+    if (curEpisode) { curEpisode.stage_status = "generating"; curEpisode.style_note = sn; renderEpisode(); }
+    return epAction(() => jpost(`/api/episodes/${t.dataset.runRefs}/run`, { style_note: sn }));
+  }
+  if (t.dataset.refsBatch) {
+    const sn = ($("#style-note") ? $("#style-note").value : "").trim();
+    const n = curEpisode ? Math.max(0, curEpisode.scene_count - 1) : 0;
+    const cost = curEpisode ? (n * Number(curEpisode.image_unit_cost || 0)).toFixed(2) : "?";
+    if (!confirm(`Generate ${n} more reference images (~$${cost})? The preview look will be applied to all.`)) return;
+    if (curEpisode) { curEpisode.stage_status = "generating"; renderEpisode(); }
+    return epAction(() => jpost(`/api/episodes/${t.dataset.refsBatch}/refs/batch`, { style_note: sn }));
   }
   if (t.dataset.reroll) return epAction(() => jpost(`/api/episodes/${t.dataset.reroll}/scene/${t.dataset.seq}/reroll`, {}));
   if (t.dataset.approveIdea) return epAction(() => jpost(`/api/episodes/${t.dataset.approveIdea}/approve`, { choice: Number(t.dataset.choice) }));

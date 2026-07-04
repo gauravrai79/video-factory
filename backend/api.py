@@ -118,7 +118,7 @@ def summary() -> dict[str, Any]:
         "specs": [{"name": pp.name, "label": f"{pp.name} · {pp.width}×{pp.height}"} for pp in PRESETS.values()],
         "fal_key_present": bool(os.environ.get("FAL_KEY") or os.environ.get("FAL_AI_API_KEY")),
         "cost_ceiling_usd": cost_ceiling_usd(),
-        "image_model": pricing.DEFAULT_IMAGE_MODEL,
+        "image_model": pricing.default_image_model(),
         "video_model": pricing.DEFAULT_VIDEO_MODEL,
         "channels": len(ch_store.list(_tenant())),
         "episodes": len(ep_store.list(_tenant())),
@@ -335,6 +335,8 @@ def _episode_view(ep, channel_name: str = "") -> dict[str, Any]:
     d["stages"] = [s.value for s in STAGE_ORDER]
     d["scene_count"] = len(ep.scenes)
     d["stage_estimate_usd"] = episode_pipeline.stage_estimate(ep)
+    d["image_unit_cost"] = round(pricing.image_cost(), 4)
+    d["refs_done_count"] = sum(1 for s in ep.scenes if (s.get("reference_image") or {}).get("status") == "ok")
     # per-scene media URLs (only when the asset exists)
     for sc in d["scenes"]:
         seq = sc.get("seq")
@@ -415,9 +417,19 @@ def delete_episode(episode_id: str) -> dict[str, Any]:
 
 @app.post("/api/episodes/{episode_id}/run")
 def run_stage(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Generate the current stage's artifact → parks at awaiting_review. Optional {brief} steers ideation."""
-    brief = (body or {}).get("brief")
-    return _episode_action(episode_id, lambda s, e: episode_pipeline.run_stage(s, e, brief=brief))
+    """Generate the current stage's artifact → parks at awaiting_review. Optional {brief} steers
+    ideation; {style_note} steers the reference-image look (refs preview)."""
+    body = body or {}
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.run_stage(
+        s, e, brief=body.get("brief"), style_note=body.get("style_note")))
+
+
+@app.post("/api/episodes/{episode_id}/refs/batch")
+def refs_batch(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """After the preview is approved, generate reference images for all remaining scenes."""
+    body = body or {}
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.generate_refs_batch(
+        s, e, style_note=body.get("style_note")))
 
 
 @app.post("/api/episodes/{episode_id}/approve")

@@ -8,14 +8,30 @@ Seedance is intentionally absent — dropped as too expensive (see project decis
 
 from __future__ import annotations
 
+import os
+
 # --- image generation / editing (USD per image) ---
 IMAGE_PRICING_USD = {
-    "nano-banana-2": 0.10,        # Gemini 3 image — up to 5 people consistent, no fine-tune
+    # OpenRouter (same Gemini/Nano-Banana model as fal, ~60% cheaper, one key) — recommended
+    "gemini-flash": 0.0387,       # google/gemini-2.5-flash-image (= Nano Banana), char-consistent
+    "gemini-3-flash": 0.0685,     # google/gemini-3.1-flash-image (newer/higher quality)
+    # fal
+    "nano-banana-2": 0.10,        # Gemini image on fal — same model, fal markup
     "nano-banana-pro": 0.15,      # top character consistency + text rendering
-    "flux-kontext": 0.04,         # strong identity across iterative edits, cheap
-    "flux-schnell": 0.003,        # cheapest draft (no built-in consistency)
+    "flux-kontext": 0.04,         # identity across iterative edits (needs a reference image)
+    "flux-dev": 0.025,            # solid text-to-image quality
+    "flux-schnell": 0.003,        # cheapest/fastest draft (lower fidelity, no identity lock)
 }
-DEFAULT_IMAGE_MODEL = "nano-banana-2"
+DEFAULT_IMAGE_MODEL = "gemini-flash"    # OpenRouter Gemini — cheap + character-consistent + one key
+
+# image model keys that route through OpenRouter (rest go through fal)
+OPENROUTER_IMAGE_MODELS = {"gemini-flash", "gemini-3-flash"}
+
+
+def default_image_model() -> str:
+    """The active image model. Override with VF_IMAGE_MODEL (e.g. flux-dev, flux-schnell) to cut cost
+    when you aren't using reference-image identity locking."""
+    return os.environ.get("VF_IMAGE_MODEL", DEFAULT_IMAGE_MODEL)
 
 # --- image-to-video (USD per second of output) ---
 VIDEO_PRICING_USD_PER_S = {
@@ -26,7 +42,7 @@ DEFAULT_VIDEO_MODEL = "wan-2.5"
 
 
 def image_cost(model: str | None = None) -> float:
-    return IMAGE_PRICING_USD.get(model or DEFAULT_IMAGE_MODEL, IMAGE_PRICING_USD[DEFAULT_IMAGE_MODEL])
+    return IMAGE_PRICING_USD.get(model or default_image_model(), IMAGE_PRICING_USD[DEFAULT_IMAGE_MODEL])
 
 
 def video_cost(model: str | None, duration_s: float) -> float:
