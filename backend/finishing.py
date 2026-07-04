@@ -193,6 +193,23 @@ def normalize_video_shot(clip_path: str | Path, out_path: str | Path, *, duratio
     return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
 
 
+def _video_graph(n: int, durations: list[float], transition_s: float) -> tuple[str, str]:
+    """Filtergraph joining n normalized inputs. transition_s>0 -> crossfade chain, else hard concat.
+    Returns (graph, out_label)."""
+    if n == 1:
+        return "", "[0:v]"
+    if transition_s and transition_s > 0:
+        segs, prev, timeline = [], "[0:v]", durations[0]
+        for k in range(1, n):
+            off = max(timeline - transition_s, 0.0)
+            out = f"[x{k}]"
+            segs.append(f"{prev}[{k}:v]xfade=transition=fade:duration={transition_s}:offset={off:.3f}{out}")
+            prev, timeline = out, timeline + durations[k] - transition_s
+        return ";".join(segs), prev
+    inp = "".join(f"[{i}:v]" for i in range(n))
+    return f"{inp}concat=n={n}:v=1:a=0[cat]", "[cat]"
+
+
 def assemble(
     shots: list[ShotMedia],
     output_path: str | Path,
@@ -201,8 +218,10 @@ def assemble(
     music_path: str | Path | None = None,
     hook: str | None = None,
     pad_color: str = "black",
+    transition_s: float = 0.0,
 ) -> FinishResult:
-    """Assemble per-shot media into one finished post. Deterministic; no model call."""
+    """Assemble per-shot media into one finished post. Deterministic; no model call.
+    transition_s>0 crossfades between shots (subtle); 0 is a hard cut."""
     spec = spec or get_spec()
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,16 +255,18 @@ def assemble(
         if music_path:
             cmd += ["-i", str(music_path)]
 
-        concat_inputs = "".join(f"[{i}:v]" for i in range(len(parts)))
-        filtergraph = f"{concat_inputs}concat=n={len(parts)}:v=1:a=0[cat]"
+        graph, base_label = _video_graph(len(parts), [s.duration_s for s in shots], transition_s)
         if overlays:
-            filtergraph += f";[cat]{overlays}[v]"
+            filtergraph = (graph + ";" if graph else "") + f"{base_label}{overlays}[v]"
             vlabel = "[v]"
         else:
-            vlabel = "[cat]"
+            filtergraph, vlabel = graph, base_label
 
-        cmd += ["-filter_complex", filtergraph, "-map", vlabel,
-                "-c:v", spec.video_codec, "-b:v", f"{spec.video_bitrate_kbps}k",
+        if filtergraph:
+            cmd += ["-filter_complex", filtergraph, "-map", vlabel]
+        else:                                   # single shot, no overlays — map directly
+            cmd += ["-map", "0:v:0"]
+        cmd += ["-c:v", spec.video_codec, "-b:v", f"{spec.video_bitrate_kbps}k",
                 "-pix_fmt", "yuv420p", "-r", str(spec.fps)]
         if music_path:
             mi = len(parts)

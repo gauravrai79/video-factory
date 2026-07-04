@@ -334,6 +334,16 @@ def _episode_view(ep, channel_name: str = "") -> dict[str, Any]:
     d["stage_index"] = [s.value for s in STAGE_ORDER].index(ep.stage) if ep.stage in [s.value for s in STAGE_ORDER] else 0
     d["stages"] = [s.value for s in STAGE_ORDER]
     d["scene_count"] = len(ep.scenes)
+    d["stage_estimate_usd"] = episode_pipeline.stage_estimate(ep)
+    # per-scene media URLs (only when the asset exists)
+    for sc in d["scenes"]:
+        seq = sc.get("seq")
+        if (sc.get("reference_image") or {}).get("status") == "ok":
+            sc["still_url"] = f"/api/episodes/{ep.episode_id}/still/{seq}"
+        if (sc.get("clip") or {}).get("status") == "ok":
+            sc["clip_url"] = f"/api/episodes/{ep.episode_id}/clip/{seq}"
+    d["rough_cut_url"] = (f"/api/episodes/{ep.episode_id}/rough-cut"
+                          if (ep.timeline or {}).get("rough_cut") else None)
     return d
 
 
@@ -408,6 +418,48 @@ def edit_artifact(episode_id: str, body: dict[str, Any]) -> dict[str, Any]:
     """Hand-edit the current artifact (idea or scenes) in place."""
     return _episode_action(episode_id, lambda s, e: episode_pipeline.edit_artifact(
         s, e, idea=body.get("idea"), scenes=body.get("scenes")))
+
+
+@app.post("/api/episodes/{episode_id}/scene/{seq}/reroll")
+def reroll_scene(episode_id: str, seq: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Re-generate one scene's asset for the current stage (still at refs, hero clip at scenes)."""
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.reroll_scene(
+        s, e, seq=seq, prompt_override=(body or {}).get("prompt")))
+
+
+def _episode_media(episode_id: str, kind: str, seq: int | None = None):
+    store = JobStore()
+    ep = EpisodeStore(store).get(episode_id)
+    if not ep:
+        raise HTTPException(404, "episode not found")
+    if kind == "rough-cut":
+        path = (ep.timeline or {}).get("rough_cut")
+        media = "video/mp4"
+    else:
+        sc = next((s for s in ep.scenes if s.get("seq") == seq), None)
+        if not sc:
+            raise HTTPException(404, "scene not found")
+        node = sc.get("reference_image" if kind == "still" else "clip") or {}
+        path = node.get("path")
+        media = "image/png" if kind == "still" else "video/mp4"
+    if not path or not Path(path).is_file():
+        raise HTTPException(404, "media not found")
+    return FileResponse(str(path), media_type=media)
+
+
+@app.get("/api/episodes/{episode_id}/still/{seq}")
+def episode_still(episode_id: str, seq: int):
+    return _episode_media(episode_id, "still", seq)
+
+
+@app.get("/api/episodes/{episode_id}/clip/{seq}")
+def episode_clip(episode_id: str, seq: int):
+    return _episode_media(episode_id, "clip", seq)
+
+
+@app.get("/api/episodes/{episode_id}/rough-cut")
+def episode_rough_cut(episode_id: str):
+    return _episode_media(episode_id, "rough-cut")
 
 
 # --------------------------------------------------------------------------- storyboards / posts

@@ -295,3 +295,13 @@ main { display: block; }
 .shot-still_kenburns { background: #1f2a3a; color: #8fb4e8; }
 .shot-lipsync_still { background: #2c2440; color: #b79cf0; }
 .shot-hero_video { background: #3a2a16; color: #f0a35e; }
+
+/* ===== M3 refs/scenes review ===== */
+.ref-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+.ref-tile { background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.rt-img { position: relative; aspect-ratio: 16/9; background: var(--bg); display: grid; place-items: center; }
+.rt-img img { width: 100%; height: 100%; object-fit: cover; }
+.ph-tile { color: var(--muted); font-size: 12px; }
+.clip-tag { position: absolute; bottom: 5px; right: 5px; font-size: 10px; background: rgba(0,0,0,.6); color: #f0a35e; padding: 1px 6px; border-radius: 4px; }
+.rt-meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px; flex-wrap: wrap; }
+.rt-meta small { margin-right: auto; }

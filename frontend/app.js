@@ -240,9 +240,50 @@ function sceneRow(s) {
 }
 function nameOf(cid) { const c = characters.find((x) => x.character_id === cid); return c ? c.name : "?"; }
 
+function refTile(s) {
+  const ri = s.reference_image || {};
+  const img = s.still_url
+    ? `<img src="${s.still_url}?t=${Date.now()}" />`
+    : `<div class="ph-tile">${ri.status === "failed" ? "✕ failed" : "—"}</div>`;
+  const hero = s.shot_type === "hero_video" && s.clip_url ? `<span class="clip-tag">▶ clip</span>` : "";
+  return `<div class="ref-tile">
+    <div class="rt-img">${img}${hero}</div>
+    <div class="rt-meta"><span class="shot shot-${s.shot_type}">${SHOT_LABEL[s.shot_type] || s.shot_type}</span>
+      <small>#${s.seq + 1}</small>
+      <button class="linklike" data-reroll="${curEpisode.episode_id}" data-seq="${s.seq}">re-roll</button></div>
+  </div>`;
+}
+
 function stagePanel(e) {
   const busy = e.stage_status === "generating";
   const err = e.stage_error ? `<div class="err-banner">${esc(e.stage_error)}</div>` : "";
+  const est = Number(e.stage_estimate_usd || 0).toFixed(2);
+  // REFS
+  if (e.stage === "refs") {
+    if (e.stage_status === "awaiting_review") {
+      return `${err}<div class="section-title">Reference images — review (re-roll any weak frame before spending on video)</div>
+        <div class="ref-grid">${e.scenes.map(refTile).join("")}</div>
+        <div class="gate-row"><button data-approve-generic="${e.episode_id}">Approve references ✓</button>
+          <button class="ghost" data-run-paid="${e.episode_id}">↻ regenerate all (~$${est})</button></div>`;
+    }
+    return `${err}<div class="section-title">Reference images</div>
+      <p class="muted">Generate one identity-locked still per scene (cast DNA + ${esc(e.title ? "channel" : "")} art style). ${e.scene_count} images ≈ <b>$${est}</b>.</p>
+      <button data-run-paid="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : `🎨 Generate reference images (~$${est})`}</button>`;
+  }
+  // SCENES
+  if (e.stage === "scenes") {
+    const hero = e.scenes.filter((s) => s.shot_type === "hero_video").length;
+    if (e.stage_status === "awaiting_review") {
+      return `${err}${e.rough_cut_url ? `<video controls preload="metadata" src="${e.rough_cut_url}?t=${Date.now()}"></video>` : ""}
+        <div class="section-title">Silent rough cut — ${hero} hero video, rest Ken Burns (audio comes next)</div>
+        <div class="ref-grid">${e.scenes.map(refTile).join("")}</div>
+        <div class="gate-row"><button data-approve-generic="${e.episode_id}">Approve cut ✓</button>
+          <button class="ghost" data-run-paid="${e.episode_id}">↻ re-render (~$${est})</button></div>`;
+    }
+    return `${err}<div class="section-title">Render scenes</div>
+      <p class="muted">Generate motion: <b>${hero}</b> hero-video shot(s); the rest use free Ken Burns on their stills, then stitch a silent rough cut with crossfades. ≈ <b>$${est}</b>.</p>
+      <button data-run-paid="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : `🎬 Render scenes (~$${est})`}</button>`;
+  }
   // IDEA
   if (e.stage === "idea") {
     if (e.stage_status === "awaiting_review" && e.idea_candidates.length) {
@@ -269,12 +310,11 @@ function stagePanel(e) {
       <p class="muted">Expand the idea into a scene-by-scene script (dialogue, narration, shot types). Text only.</p>
       <button data-run="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✍ Write script"}</button>`;
   }
-  // beyond script (refs/scenes/audio/assembly/done)
+  // audio / assembly / done
   const chosen = e.idea && e.idea.title ? `<div class="chosen">📌 <b>${esc(e.idea.title)}</b></div>` : "";
   return `${err}${chosen}
-    ${e.scenes.length ? `<div class="section-title">Approved script — ${e.scenes.length} scenes</div>
-      <div class="scene-list">${e.scenes.map(sceneRow).join("")}</div>` : ""}
-    <div class="stage-next">▶ Next stage — <b>${esc(e.stage)}</b> — is wired in the next milestone.</div>`;
+    ${e.rough_cut_url ? `<div class="section-title">Approved rough cut (silent)</div><video controls preload="metadata" src="${e.rough_cut_url}?t=${Date.now()}"></video>` : ""}
+    <div class="stage-next">▶ Next stage — <b>${esc(e.stage)}</b> (voices + music) — is wired in the next milestone.</div>`;
 }
 
 function renderEpisode() {
@@ -305,8 +345,16 @@ document.addEventListener("click", (e) => {
   if (t.dataset.newEp) return newEpisode(t.dataset.newEp);
   if (t.dataset.episode) return openEpisode(t.dataset.episode);
   if (t.dataset.run) { if (curEpisode) { curEpisode.stage_status = "generating"; renderEpisode(); } return epAction(() => jpost(`/api/episodes/${t.dataset.run}/run`, {})); }
+  if (t.dataset.runPaid) {
+    const est = curEpisode ? Number(curEpisode.stage_estimate_usd || 0).toFixed(2) : "?";
+    if (!confirm(`This runs a PAID stage — approx $${est} of generation. Continue?`)) return;
+    if (curEpisode) { curEpisode.stage_status = "generating"; renderEpisode(); }
+    return epAction(() => jpost(`/api/episodes/${t.dataset.runPaid}/run`, {}));
+  }
+  if (t.dataset.reroll) return epAction(() => jpost(`/api/episodes/${t.dataset.reroll}/scene/${t.dataset.seq}/reroll`, {}));
   if (t.dataset.approveIdea) return epAction(() => jpost(`/api/episodes/${t.dataset.approveIdea}/approve`, { choice: Number(t.dataset.choice) }));
   if (t.dataset.approveScript) return epAction(() => jpost(`/api/episodes/${t.dataset.approveScript}/approve`, {}));
+  if (t.dataset.approveGeneric) return epAction(() => jpost(`/api/episodes/${t.dataset.approveGeneric}/approve`, {}));
   if (t.dataset.epf) { epFilter = t.dataset.epf; renderEpFilters(); refreshEpisodes(); }
 });
 
