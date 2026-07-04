@@ -284,6 +284,37 @@ function stagePanel(e) {
       <p class="muted">Generate motion: <b>${hero}</b> hero-video shot(s); the rest use free Ken Burns on their stills, then stitch a silent rough cut with crossfades. ≈ <b>$${est}</b>.</p>
       <button data-run-paid="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : `🎬 Render scenes (~$${est})`}</button>`;
   }
+  // AUDIO
+  if (e.stage === "audio") {
+    if (e.stage_status === "awaiting_review") {
+      return `${err}${e.audio_cut_url ? `<video controls preload="metadata" src="${e.audio_cut_url}?t=${Date.now()}"></video>` : ""}
+        <div class="section-title">Voiced cut — review with 🔊 sound. Re-roll a scene if a voice is off.</div>
+        <div class="ref-grid">${e.scenes.map(refTile).join("")}</div>
+        <div class="gate-row"><button data-approve-generic="${e.episode_id}">Approve audio ✓</button>
+          <button class="ghost" data-run-paid="${e.episode_id}">↻ regenerate all (~$${est})</button></div>`;
+    }
+    return `${err}<div class="section-title">Audio — voices + music</div>
+      <p class="muted">Narrator VO + each character's voice (their locked Voice DNA) + a music bed; lip-sync on talking shots, then a voiced cut. ≈ <b>$${est}</b>.</p>
+      <button data-run-paid="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : `🔊 Generate voices + music (~$${est})`}</button>`;
+  }
+  // ASSEMBLY
+  if (e.stage === "assembly") {
+    if (e.stage_status === "awaiting_review") {
+      return `${err}${e.final_url ? `<video controls preload="metadata" src="${e.final_url}?t=${Date.now()}"></video>` : ""}
+        <div class="section-title">Final cut — last look</div>
+        <div class="gate-row"><button data-approve-generic="${e.episode_id}">Approve &amp; finish ✓</button>
+          ${e.final_url ? `<a class="ghost dl" href="${e.final_url}" download>⬇ download</a>` : ""}</div>`;
+    }
+    return `${err}<div class="section-title">Assemble final</div>
+      <p class="muted">Build the final cut + editable timeline (EDL). Free — no generation spend.</p>
+      <button data-run="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "🎬 Assemble final"}</button>`;
+  }
+  // DONE
+  if (e.stage === "done") {
+    return `<div class="done-banner">✓ Episode complete</div>
+      ${e.final_url ? `<video controls preload="metadata" src="${e.final_url}?t=${Date.now()}"></video>
+        <div class="gate-row"><a class="dl-btn" href="${e.final_url}" download>⬇ Download episode</a></div>` : ""}`;
+  }
   // IDEA
   if (e.stage === "idea") {
     if (e.stage_status === "awaiting_review" && e.idea_candidates.length) {
@@ -310,11 +341,7 @@ function stagePanel(e) {
       <p class="muted">Expand the idea into a scene-by-scene script (dialogue, narration, shot types). Text only.</p>
       <button data-run="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✍ Write script"}</button>`;
   }
-  // audio / assembly / done
-  const chosen = e.idea && e.idea.title ? `<div class="chosen">📌 <b>${esc(e.idea.title)}</b></div>` : "";
-  return `${err}${chosen}
-    ${e.rough_cut_url ? `<div class="section-title">Approved rough cut (silent)</div><video controls preload="metadata" src="${e.rough_cut_url}?t=${Date.now()}"></video>` : ""}
-    <div class="stage-next">▶ Next stage — <b>${esc(e.stage)}</b> (voices + music) — is wired in the next milestone.</div>`;
+  return `${err}<div class="stage-next">Stage <b>${esc(e.stage)}</b>.</div>`;
 }
 
 function renderEpisode() {

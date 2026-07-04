@@ -342,8 +342,10 @@ def _episode_view(ep, channel_name: str = "") -> dict[str, Any]:
             sc["still_url"] = f"/api/episodes/{ep.episode_id}/still/{seq}"
         if (sc.get("clip") or {}).get("status") == "ok":
             sc["clip_url"] = f"/api/episodes/{ep.episode_id}/clip/{seq}"
-    d["rough_cut_url"] = (f"/api/episodes/{ep.episode_id}/rough-cut"
-                          if (ep.timeline or {}).get("rough_cut") else None)
+    tl = ep.timeline or {}
+    d["rough_cut_url"] = f"/api/episodes/{ep.episode_id}/rough-cut" if tl.get("rough_cut") else None
+    d["audio_cut_url"] = f"/api/episodes/{ep.episode_id}/audio-cut" if tl.get("audio_cut") else None
+    d["final_url"] = f"/api/episodes/{ep.episode_id}/final" if tl.get("final_video") else None
     return d
 
 
@@ -432,8 +434,9 @@ def _episode_media(episode_id: str, kind: str, seq: int | None = None):
     ep = EpisodeStore(store).get(episode_id)
     if not ep:
         raise HTTPException(404, "episode not found")
-    if kind == "rough-cut":
-        path = (ep.timeline or {}).get("rough_cut")
+    if kind in ("rough-cut", "audio-cut", "final"):
+        key = {"rough-cut": "rough_cut", "audio-cut": "audio_cut", "final": "final_video"}[kind]
+        path = (ep.timeline or {}).get(key)
         media = "video/mp4"
     else:
         sc = next((s for s in ep.scenes if s.get("seq") == seq), None)
@@ -460,6 +463,16 @@ def episode_clip(episode_id: str, seq: int):
 @app.get("/api/episodes/{episode_id}/rough-cut")
 def episode_rough_cut(episode_id: str):
     return _episode_media(episode_id, "rough-cut")
+
+
+@app.get("/api/episodes/{episode_id}/audio-cut")
+def episode_audio_cut(episode_id: str):
+    return _episode_media(episode_id, "audio-cut")
+
+
+@app.get("/api/episodes/{episode_id}/final")
+def episode_final(episode_id: str):
+    return _episode_media(episode_id, "final")
 
 
 # --------------------------------------------------------------------------- storyboards / posts

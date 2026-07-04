@@ -12,16 +12,18 @@ are wired in later milestones and return a "not available yet" result.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from .agents import shot_prompt, writer
-from .capabilities import fal_image, fal_video, pricing
+from .capabilities import fal_image, fal_video, lipsync as lipsync_cap, music as music_cap, pricing, voice as voice_cap
 from .capabilities.fal_video import image_ref
 from .channels import Channel, ChannelStore
 from .characters import Character, CharacterStore
 from .episodes import Episode, EpisodeStore, Stage, StageStatus, next_stage
-from .finishing import ShotMedia, assemble
+from .finishing import FFMPEG, ScoredShot, ShotMedia, assemble, assemble_scored, media_duration
 from .spec import OutputSpec, get_spec
 
 
@@ -50,6 +52,13 @@ def stage_estimate(ep: Episode) -> float:
     if ep.stage == Stage.SCENES.value:
         return round(sum(fal_video.video_billed_cost(pricing.DEFAULT_VIDEO_MODEL, s.get("duration_s", 5))
                          for s in ep.scenes if s.get("shot_type") == "hero_video"), 4)
+    if ep.stage == Stage.AUDIO.value:
+        chars = sum(len(s.get("narration", "")) + sum(len(d.get("line", "")) for d in (s.get("dialogue") or []))
+                    for s in ep.scenes)
+        lip = sum(pricing.lipsync_cost(None, s.get("duration_s", 5))
+                  for s in ep.scenes if s.get("shot_type") == "lipsync_still")
+        music = pricing.music_cost(None, sum(s.get("duration_s", 5) for s in ep.scenes))
+        return round(pricing.tts_cost(None, chars) + lip + music, 4)
     return 0.0
 
 
@@ -106,6 +115,105 @@ def _gen_scene_clip(scene: dict, cast_map: dict[str, Character], spec: OutputSpe
     info = {"path": path if res.success else "", "status": "ok" if res.success else "failed",
             "error": res.error}
     return info, res.cost_usd
+
+
+def _voice_opts(char: Character | None) -> tuple[str, str, str | None]:
+    """(model, voice_id, clone_audio) for a character's Voice DNA."""
+    v = (char.voice if char else {}) or {}
+    provider = v.get("provider", "elevenlabs")
+    model = v.get("model") or ("chatterbox" if provider == "chatterbox" else pricing.DEFAULT_TTS_MODEL)
+    return model, (v.get("voice_id") or "Rachel"), v.get("clone_audio")
+
+
+def _concat_audio(paths: list[str], out_path: str) -> bool:
+    if len(paths) == 1:
+        shutil.copy(paths[0], out_path)
+        return True
+    cmd = [FFMPEG, "-y"]
+    for p in paths:
+        cmd += ["-i", p]
+    inp = "".join(f"[{i}:a]" for i in range(len(paths)))
+    cmd += ["-filter_complex", f"{inp}concat=n={len(paths)}:v=0:a=1[a]", "-map", "[a]",
+            "-c:a", "libmp3lame", "-b:a", "128k", out_path]
+    return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+
+
+def _scene_voice(scene: dict, cast_map: dict[str, Character], ch: Channel, out_dir: Path,
+                 *, execute: bool = True) -> tuple[str | None, float]:
+    """Render a scene's voice track: narrator VO + each dialogue line in its speaker's voice. Returns
+    (audio_path|None, cost)."""
+    seq = scene["seq"]
+    adir = out_dir / "audio"
+    parts, cost = [], 0.0
+    narr = (scene.get("narration") or "").strip()
+    if narr:
+        p = str(adir / f"{seq:03d}_narr.mp3")
+        r = voice_cap.speak(text=narr, output_path=p, voice_id=(ch.narrator_voice_id or "Rachel"),
+                            execute=execute)
+        if r.ok:
+            parts.append(p); cost += r.cost_usd
+    for k, line in enumerate(scene.get("dialogue") or []):
+        txt = (line.get("line") or "").strip()
+        if not txt:
+            continue
+        spk = cast_map.get(line.get("speaker"))
+        model, vid, clone = _voice_opts(spk)
+        p = str(adir / f"{seq:03d}_d{k}.mp3")
+        r = voice_cap.speak(text=txt, output_path=p, voice_id=vid, model=model, clone_audio=clone,
+                            execute=execute)
+        if r.ok:
+            parts.append(p); cost += r.cost_usd
+    if not parts:
+        return None, cost
+    if len(parts) == 1:
+        return parts[0], cost
+    out = str(adir / f"{seq:03d}_voice.mp3")
+    _concat_audio(parts, out)
+    return out, cost
+
+
+def _music_prompt(ch: Channel) -> str:
+    style = ch.art_style or "cinematic"
+    return (f"{style} instrumental background score for a {ch.format.replace('_', ' ')} titled "
+            f"'{ch.name}'. {ch.premise[:160]}. Subtle, non-distracting, loopable.")
+
+
+def _shot_for_scene(scene: dict) -> ScoredShot:
+    """Build the scored shot from a scene's already-generated media/audio."""
+    audio = scene.get("audio") or {}
+    dur = scene.get("duration_s", 5)
+    if scene.get("shot_type") == "lipsync_still" and audio.get("talk"):
+        return ScoredShot("talking", audio["talk"], dur)
+    voice = audio.get("voice")
+    if scene.get("shot_type") == "hero_video" and (scene.get("clip") or {}).get("status") == "ok":
+        return ScoredShot("video", scene["clip"]["path"], dur, audio_path=voice)
+    still = (scene.get("reference_image") or {}).get("path")
+    zoom = "in" if scene["seq"] % 2 == 0 else "out"
+    return ScoredShot("kenburns", still, dur, audio_path=voice, zoom=zoom)
+
+
+def _assemble_audio_cut(ep: Episode, ch: Channel, *, regen_music: bool = False,
+                        execute: bool = True) -> tuple[bool, str, float]:
+    """Assemble the voiced+scored cut from each scene's stored audio; (re)generate the music bed."""
+    out_dir = _out_dir(ep)
+    total_dur = round(sum(s.get("duration_s", 5) for s in ep.scenes), 2)
+    music_path = (ep.timeline or {}).get("music")
+    cost = 0.0
+    if regen_music or not music_path or not Path(music_path or "").is_file():
+        music_path = str(out_dir / "music.mp3")
+        mr = music_cap.generate(prompt=_music_prompt(ch), output_path=music_path,
+                                duration_s=total_dur, execute=execute)
+        cost += mr.cost_usd
+        if not mr.ok:
+            music_path = None
+    shots = [_shot_for_scene(s) for s in ep.scenes]
+    audio_cut = str(out_dir / "audio_cut.mp4")
+    fr = assemble_scored(shots, audio_cut, spec=channel_spec(ch), music_path=music_path)
+    if not fr.success:
+        return False, fr.error or "assembly failed", cost
+    ep.timeline = {**(ep.timeline or {}), "audio_cut": audio_cut, "music": music_path,
+                   "probe": fr.probe, "silent": False}
+    return True, "", cost
 
 
 def _assemble_rough(ep: Episode, ch: Channel) -> tuple[bool, str]:
@@ -205,6 +313,50 @@ def run_stage(store, ep: Episode) -> Episode:
         ep.log("scenes", {"hero_videos": sum(1 for s in ep.scenes if s.get("shot_type") == "hero_video"),
                           "failed": failed, "cost_usd": round(spent, 4)})
 
+    elif stage == Stage.AUDIO:
+        if not ep.scenes or not all((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
+            return _fail(eps, ep, "generate + approve reference images and scenes first")
+        est = stage_estimate(ep)
+        if est > episode_ceiling_usd():
+            return _fail(eps, ep, f"est ${est} over episode ceiling ${episode_ceiling_usd()}")
+        cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
+        out_dir = _out_dir(ep)
+        spent = 0.0
+        for scene in ep.scenes:
+            vpath, vcost = _scene_voice(scene, cast_map, ch, out_dir)
+            spent += vcost
+            if scene.get("shot_type") == "lipsync_still" and vpath:
+                still = (scene.get("reference_image") or {}).get("path")
+                talk = str(out_dir / "talk" / f"{scene['seq']:03d}.mp4")
+                lr = lipsync_cap.lipsync(image_path=still, audio_path=vpath, output_path=talk)
+                spent += lr.cost_usd
+                scene["duration_s"] = round(lr.duration_s or scene.get("duration_s", 5), 2)
+                scene["audio"] = {"voice": vpath, "talk": (talk if lr.ok else None)}
+            else:
+                if vpath:
+                    scene["duration_s"] = round(max(scene.get("duration_s", 5), media_duration(vpath) + 0.4), 2)
+                scene["audio"] = {"voice": vpath}
+        ok, err, mcost = _assemble_audio_cut(ep, ch, regen_music=True)
+        spent += mcost
+        ep.spent_usd = round(ep.spent_usd + spent, 4)
+        if not ok:
+            return _fail(eps, ep, f"audio assembly failed: {err}")
+        ep.stage_status = StageStatus.AWAITING_REVIEW.value
+        ep.log("audio", {"cost_usd": round(spent, 4),
+                         "duration_s": (ep.timeline.get("probe") or {}).get("duration_s")})
+
+    elif stage == Stage.ASSEMBLY:
+        audio_cut = (ep.timeline or {}).get("audio_cut")
+        if not audio_cut or not Path(audio_cut).is_file():
+            return _fail(eps, ep, "run the audio stage first")
+        final = str(_out_dir(ep) / "final.mp4")
+        shutil.copy(audio_cut, final)
+        edl = [{"seq": s["seq"], "shot_type": s.get("shot_type"), "duration_s": s.get("duration_s"),
+                "heading": s.get("heading")} for s in ep.scenes]
+        ep.timeline = {**(ep.timeline or {}), "final_video": final, "edl": edl}
+        ep.stage_status = StageStatus.AWAITING_REVIEW.value
+        ep.log("assembly", {"scenes": len(ep.scenes)})
+
     else:
         return _fail(eps, ep, f"stage '{stage.value}' runs in a later milestone")
 
@@ -231,6 +383,22 @@ def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = 
             ep.spent_usd = round(ep.spent_usd + cost, 4)
         _assemble_rough(ep, ch)             # rebuild the rough cut with the new asset
         ep.log("scene_reroll", {"seq": seq})
+    elif ep.stage == Stage.AUDIO.value:
+        vpath, vcost = _scene_voice(scene, cast_map, ch, out_dir)
+        ep.spent_usd = round(ep.spent_usd + vcost, 4)
+        if scene.get("shot_type") == "lipsync_still" and vpath:
+            still = (scene.get("reference_image") or {}).get("path")
+            talk = str(out_dir / "talk" / f"{scene['seq']:03d}.mp4")
+            lr = lipsync_cap.lipsync(image_path=still, audio_path=vpath, output_path=talk)
+            ep.spent_usd = round(ep.spent_usd + lr.cost_usd, 4)
+            scene["duration_s"] = round(lr.duration_s or scene.get("duration_s", 5), 2)
+            scene["audio"] = {"voice": vpath, "talk": (talk if lr.ok else None)}
+        else:
+            if vpath:
+                scene["duration_s"] = round(max(scene.get("duration_s", 5), media_duration(vpath) + 0.4), 2)
+            scene["audio"] = {"voice": vpath}
+        _assemble_audio_cut(ep, ch, regen_music=False)   # reuse existing music bed
+        ep.log("audio_reroll", {"seq": seq})
     else:
         raise StageError(f"nothing to re-roll at stage '{ep.stage}'")
     return eps.update(ep)
@@ -269,11 +437,20 @@ def approve_stage(store, ep: Episode, *, payload: dict[str, Any] | None = None) 
         if not (ep.timeline or {}).get("rough_cut"):
             raise StageError("no rough cut to approve")
         ep.log("scenes_approved", {})
+    elif stage == Stage.AUDIO:
+        if not (ep.timeline or {}).get("audio_cut"):
+            raise StageError("no audio cut to approve")
+        ep.log("audio_approved", {})
+    elif stage == Stage.ASSEMBLY:
+        if not (ep.timeline or {}).get("final_video"):
+            raise StageError("no final video to approve")
+        ep.log("assembly_approved", {})
     else:
         raise StageError(f"stage '{stage.value}' cannot be approved yet")
 
     ep.stage = next_stage(stage).value
-    ep.stage_status = StageStatus.PENDING.value
+    ep.stage_status = (StageStatus.APPROVED.value if ep.stage == Stage.DONE.value
+                       else StageStatus.PENDING.value)
     ep.stage_error = ""
     return eps.update(ep)
 

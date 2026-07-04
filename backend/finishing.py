@@ -88,6 +88,14 @@ def probe(path: str | Path) -> dict:
     return json.loads(out.stdout)
 
 
+def media_duration(path: str | Path) -> float:
+    """Duration in seconds of any media file (audio or video), 0.0 on failure."""
+    try:
+        return round(float(probe(path).get("format", {}).get("duration", 0) or 0), 3)
+    except Exception:
+        return 0.0
+
+
 def _summary(path: str | Path) -> dict:
     data = probe(path)
     fmt = data.get("format", {})
@@ -185,11 +193,14 @@ def ken_burns_clip(image_path: str | Path, out_path: str | Path, *, duration_s: 
 
 
 def normalize_video_shot(clip_path: str | Path, out_path: str | Path, *, duration_s: float,
-                         spec: OutputSpec, pad_color: str = "black") -> bool:
-    """Trim a generated video clip to the shot duration and conform it to spec dims/fps."""
+                         spec: OutputSpec, pad_color: str = "black", keep_audio: bool = False) -> bool:
+    """Trim a generated video clip to the shot duration and conform it to spec dims/fps.
+    keep_audio=True preserves the clip's own audio track (e.g. a lip-sync talking clip)."""
     cmd = [FFMPEG, "-y", "-i", str(clip_path), "-t", f"{duration_s}",
            "-vf", _dimension_chain(spec, pad_color), "-r", str(spec.fps),
-           "-c:v", spec.video_codec, "-pix_fmt", "yuv420p", "-an", str(out_path)]
+           "-c:v", spec.video_codec, "-pix_fmt", "yuv420p"]
+    cmd += (["-c:a", "aac", "-b:a", "128k"] if keep_audio else ["-an"])
+    cmd += [str(out_path)]
     return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
 
 
@@ -279,6 +290,104 @@ def assemble(
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
             return FinishResult(success=False, error=f"assembly failed: {res.stderr[-800:]}")
+
+    out = _summary(output_path)
+    violations = validate(out, spec)
+    return FinishResult(success=True, output_path=str(output_path), probe=out,
+                        compliant=not violations, violations=violations)
+
+
+@dataclass
+class ScoredShot:
+    """A shot for the audio-scored assembly: video + a per-scene voice track (or embedded audio)."""
+    render_mode: str                 # "kenburns" (still) | "video" (silent clip) | "talking" (clip w/ audio)
+    media_path: str
+    duration_s: float
+    audio_path: str | None = None    # scene voice track (narration+dialogue); None -> silence
+    zoom: str = "in"
+
+
+def assemble_scored(
+    shots: list[ScoredShot],
+    output_path: str | Path,
+    *,
+    spec: OutputSpec | None = None,
+    music_path: str | Path | None = None,
+    music_gain: float = 0.16,
+    pad_color: str = "black",
+) -> FinishResult:
+    """Assemble shots with per-scene audio into one voiced+scored cut. Each scene becomes a
+    self-contained video+audio clip (so audio stays synced), then all are concatenated and a music
+    bed is mixed under the voices (ducked by `music_gain`). Deterministic; no model call."""
+    spec = spec or get_spec()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not shots:
+        return FinishResult(success=False, error="no shots to assemble")
+    missing = [s.media_path for s in shots if not Path(s.media_path).is_file()]
+    if missing:
+        return FinishResult(success=False, error=f"missing shot media: {missing[:3]}")
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        scene_clips: list[str] = []
+        for i, sh in enumerate(shots):
+            vpart = str(tdp / f"v_{i:03d}.mp4")
+            if sh.render_mode == "kenburns":
+                ok = ken_burns_clip(sh.media_path, vpart, duration_s=sh.duration_s, spec=spec,
+                                    zoom=sh.zoom, pad_color=pad_color)
+            elif sh.render_mode == "talking":
+                ok = normalize_video_shot(sh.media_path, vpart, duration_s=sh.duration_s, spec=spec,
+                                          pad_color=pad_color, keep_audio=True)
+            else:
+                ok = normalize_video_shot(sh.media_path, vpart, duration_s=sh.duration_s, spec=spec,
+                                          pad_color=pad_color)
+            if not ok or not Path(vpart).is_file():
+                return FinishResult(success=False, error=f"failed to render shot {i} ({sh.render_mode})")
+
+            if sh.render_mode == "talking":       # already carries its own audio
+                scene_clips.append(vpart)
+                continue
+
+            apart = str(tdp / f"a_{i:03d}.m4a")
+            if sh.audio_path and Path(sh.audio_path).is_file():
+                acmd = [FFMPEG, "-y", "-i", str(sh.audio_path), "-af", "apad", "-t", f"{sh.duration_s}",
+                        "-ar", "44100", "-ac", "2", "-c:a", "aac", "-b:a", "128k", apart]
+            else:
+                acmd = [FFMPEG, "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                        "-t", f"{sh.duration_s}", "-c:a", "aac", "-b:a", "128k", apart]
+            if subprocess.run(acmd, capture_output=True, text=True).returncode != 0:
+                return FinishResult(success=False, error=f"failed to build audio for shot {i}")
+
+            scene = str(tdp / f"s_{i:03d}.mp4")
+            mcmd = [FFMPEG, "-y", "-i", vpart, "-i", apart, "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest", scene]
+            if subprocess.run(mcmd, capture_output=True, text=True).returncode != 0:
+                return FinishResult(success=False, error=f"failed to mux shot {i}")
+            scene_clips.append(scene)
+
+        # concat all scene clips (video+audio) + mix the music bed under the voices, in one command.
+        cmd = [FFMPEG, "-y"]
+        for sc in scene_clips:
+            cmd += ["-i", sc]
+        if music_path:
+            cmd += ["-stream_loop", "-1", "-i", str(music_path)]
+        n = len(scene_clips)
+        concat_in = "".join(f"[{i}:v][{i}:a]" for i in range(n))
+        fg = f"{concat_in}concat=n={n}:v=1:a=1[cv][ca]"
+        if music_path:
+            fg += f";[{n}:a]volume={music_gain}[mus];[ca][mus]amix=inputs=2:duration=first:dropout_transition=0[a]"
+            alabel = "[a]"
+        else:
+            alabel = "[ca]"
+        cmd += ["-filter_complex", fg, "-map", "[cv]", "-map", alabel,
+                "-c:v", spec.video_codec, "-b:v", f"{spec.video_bitrate_kbps}k",
+                "-pix_fmt", "yuv420p", "-r", str(spec.fps),
+                "-c:a", spec.audio_codec, "-b:a", f"{spec.audio_bitrate_kbps}k", "-shortest",
+                str(output_path)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            return FinishResult(success=False, error=f"scored assembly failed: {res.stderr[-800:]}")
 
     out = _summary(output_path)
     violations = validate(out, spec)
