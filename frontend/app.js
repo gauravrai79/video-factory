@@ -446,7 +446,13 @@ function renderEpisode() {
 
 async function epAction(fn) {
   try { curEpisode = await fn(); renderEpisode(); refreshEpisodes(); refreshSummary(); }
-  catch (err) { alert("Error: " + err.message); }
+  catch (err) {
+    alert("Error: " + err.message);
+    // clear the optimistic "working…" state by reloading the episode's real state
+    if (curEpisode && curEpisode.episode_id) {
+      try { curEpisode = await api(`/api/episodes/${curEpisode.episode_id}`); renderEpisode(); } catch (e) {}
+    }
+  }
 }
 
 // ---------- events + polling ----------

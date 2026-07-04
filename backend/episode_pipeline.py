@@ -435,7 +435,7 @@ def generate_refs_batch(store, ep: Episode, *, style_note: str | None = None) ->
     eps, chs, cs, ch, cast = _ctx(store, ep)
     if ep.stage != Stage.REFS.value:
         raise StageError("not at the reference-image stage")
-    if (ep.scenes[0].get("reference_image") or {}).get("status") != "ok":
+    if not any((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
         raise StageError("generate a preview first")
     if style_note is not None:
         ep.style_note = style_note.strip()
