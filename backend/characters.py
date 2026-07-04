@@ -1,17 +1,19 @@
-"""Character — the primary entity of the influencer factory.
+"""Character — a digital actor (the primary reusable cast entity).
 
-A Character is a persistent persona (human or animal — e.g. a glamour model, or Jango the dog) that
-must stay visually and behaviorally consistent across thousands of generated posts. Its reference
-images are its "DNA": they're injected into every still/video generation so the same face/body/look
-carries through. The persona text is injected into every prompt so the system never has to be
-re-prompted by hand.
+A Character is a persistent actor (human or animal — a glamour model, or Jango the dog) that stays
+consistent across every scene, episode, and channel. It carries three locked "DNAs":
 
-Reference images live on local disk (a Railway volume) for v1 — see project decisions. They are
-either uploaded by the operator (e.g. real photos of Jango) or minted once from `dna_prompt` via a
-character-consistent image model (see capabilities/fal_image.mint_reference_sheet).
+  - Visual DNA   — reference images injected into every still/video generation (the face/body/look).
+  - Voice DNA    — one locked voice (provider + voice_id, preset or cloned) reused for every spoken
+                   line the character ever says, so the voice is consistent by construction.
+  - Personality  — a structured character bible (backstory, traits, speech style, catchphrases,
+                   relationships, mannerisms) rendered as a SYSTEM PROMPT and injected at every
+                   generative stage: writer dialogue, TTS delivery, and visual/motion prompts.
 
-Stored in the same SQLite DB as jobs; Postgres swap is a driver change (the repository API is shaped
-for it).
+Reference images live on local disk (a Railway volume). They are uploaded (real photos of Jango) or
+minted from `dna_prompt` via a character-consistent image model (capabilities/fal_image).
+
+Stored in the same SQLite DB as jobs; Postgres swap is a driver change.
 """
 
 from __future__ import annotations
@@ -36,9 +38,17 @@ class Character:
     persona: dict[str, Any] = field(default_factory=dict)
     #   recognized persona keys: appearance, facial_features, body_type, hair, voice, personality,
     #   clothing_style, environments (list), niche, tone
-    reference_images: list[str] = field(default_factory=list)   # local paths = character "DNA"
+    reference_images: list[str] = field(default_factory=list)   # Visual DNA — local paths
     dna_prompt: str = ""                       # canonical look description (mints reference sheet)
     safety_tolerance: int = 5                  # fal safety_tolerance (1=strict..6=permissive)
+    # Voice DNA — a locked voice reused for every line, across all scenes/episodes/channels.
+    voice: dict[str, Any] = field(default_factory=dict)
+    #   keys: provider (elevenlabs|...), voice_id, cloned (bool), params {pace,stability,accent},
+    #         signature_line (a short preview line), preview_path (rendered signature audio)
+    # Personality DNA — structured character bible; rendered as a system prompt (personality_prompt()).
+    personality: dict[str, Any] = field(default_factory=dict)
+    #   keys: backstory, traits (list), speech_style, catchphrases (list),
+    #         relationships (dict name->relation), mannerisms (list)
     social_accounts: dict[str, str] = field(default_factory=dict)   # platform -> handle/url
     posting_schedule: dict[str, Any] = field(default_factory=dict)  # e.g. {"reels_per_day": 3}
     active: bool = True
@@ -47,6 +57,37 @@ class Character:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def personality_prompt(self) -> str:
+        """Render the personality bible as a system-prompt block for the writer / TTS delivery /
+        motion prompts, so the actor behaves consistently everywhere. Empty if no bible set."""
+        p = self.personality or {}
+        lines: list[str] = []
+        who = f"{self.name}" + (f" (a {self.species})" if self.species and self.species != "person" else "")
+        lines.append(f"Character: {who}.")
+        if p.get("backstory"):
+            lines.append(f"Backstory: {p['backstory']}")
+        if p.get("traits"):
+            lines.append("Traits: " + ", ".join(p["traits"]))
+        if p.get("speech_style"):
+            lines.append(f"Speech style: {p['speech_style']}")
+        if p.get("catchphrases"):
+            lines.append("Catchphrases: " + "; ".join(f'"{c}"' for c in p["catchphrases"]))
+        if p.get("mannerisms"):
+            lines.append("Mannerisms: " + ", ".join(p["mannerisms"]))
+        if p.get("relationships"):
+            rel = "; ".join(f"{k}: {v}" for k, v in p["relationships"].items())
+            lines.append(f"Relationships: {rel}")
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def voice_id(self) -> str | None:
+        return (self.voice or {}).get("voice_id")
+
+    def has_voice(self) -> bool:
+        return bool(self.voice_id())
+
+    def has_reference(self) -> bool:
+        return bool(self.reference_images)
 
     def look_descriptor(self) -> str:
         """One compact line describing the character's look — injected into every shot prompt so a
@@ -137,4 +178,14 @@ class CharacterStore:
         if not char:
             return None
         char.reference_images = list(dict.fromkeys([*char.reference_images, *paths]))
+        return self.update(char)
+
+    def patch(self, character_id: str, **fields: Any) -> Character | None:
+        """Partial update — set only the given known fields (e.g. voice, personality, dna_prompt)."""
+        char = self.get(character_id)
+        if not char:
+            return None
+        for k, v in fields.items():
+            if k in Character.__dataclass_fields__ and k not in ("character_id", "created_at"):
+                setattr(char, k, v)
         return self.update(char)

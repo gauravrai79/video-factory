@@ -26,7 +26,9 @@ from fastapi.staticfiles import StaticFiles
 from . import runner, sla as sla_mod
 from .agents.storyboard import plan_storyboard
 from .capabilities import fal_image, pricing
+from .channels import CAST_ROLES, FORMATS, ChannelStore
 from .characters import CharacterStore
+from .episodes import STAGE_ORDER, EpisodeStore, Stage
 from .jobstore import JobStore, State
 from .pipeline import cost_ceiling_usd, create_job, qc_decision
 from .scene_library import catalog as scene_catalog
@@ -106,6 +108,7 @@ def summary() -> dict[str, Any]:
         spent += float((j.result.get("generation") or {}).get("cost_usd") or 0)
     breaches = [s for s in sla_mod.evaluate(store, tenant_id=_tenant()) if s.breached]
     cs = CharacterStore(store)
+    ch_store, ep_store = ChannelStore(store), EpisodeStore(store)
     return {
         "tenant": _tenant(),
         "project": _project(),
@@ -116,6 +119,8 @@ def summary() -> dict[str, Any]:
         "cost_ceiling_usd": cost_ceiling_usd(),
         "image_model": pricing.DEFAULT_IMAGE_MODEL,
         "video_model": pricing.DEFAULT_VIDEO_MODEL,
+        "channels": len(ch_store.list(_tenant())),
+        "episodes": len(ep_store.list(_tenant())),
         "characters": len(cs.list(_tenant())),
         "total_jobs": len(jobs),
         "by_state": by_state,
@@ -130,12 +135,28 @@ def scenes() -> list[dict[str, Any]]:
     return scene_catalog()
 
 
-# --------------------------------------------------------------------------- characters
+# --------------------------------------------------------------------------- characters (actors)
+
+_CHAR_FIELDS = ("species", "age", "persona", "reference_images", "dna_prompt",
+                "safety_tolerance", "voice", "personality", "social_accounts", "posting_schedule")
+
+
+def _char_view(char) -> dict[str, Any]:
+    """Character as a digital actor: includes reference-image URLs so the UI can SHOW the actor."""
+    d = char.as_dict()
+    d["reference_image_urls"] = [f"/api/characters/{char.character_id}/reference/{i}"
+                                 for i in range(len(char.reference_images))]
+    d["has_reference"] = char.has_reference()
+    d["has_voice"] = char.has_voice()
+    d["voice_preview_url"] = (f"/api/characters/{char.character_id}/voice-preview"
+                              if (char.voice or {}).get("preview_path") else None)
+    return d
+
 
 @app.get("/api/characters")
 def list_characters() -> list[dict[str, Any]]:
     cs = CharacterStore()
-    return [c.as_dict() for c in cs.list(_tenant())]
+    return [_char_view(c) for c in cs.list(_tenant())]
 
 
 @app.post("/api/characters")
@@ -147,11 +168,9 @@ def create_character(body: dict[str, Any]) -> dict[str, Any]:
     cs = CharacterStore()
     if cs.get_by_slug(_tenant(), slug):
         raise HTTPException(409, f"character slug '{slug}' already exists")
-    fields = {k: v for k, v in body.items()
-              if k in ("species", "age", "persona", "reference_images", "dna_prompt",
-                       "safety_tolerance", "social_accounts", "posting_schedule")}
+    fields = {k: v for k, v in body.items() if k in _CHAR_FIELDS}
     char = cs.create(tenant_id=_tenant(), name=name, slug=slug, **fields)
-    return char.as_dict()
+    return _char_view(char)
 
 
 @app.get("/api/characters/{character_id}")
@@ -160,7 +179,59 @@ def get_character(character_id: str) -> dict[str, Any]:
     char = cs.get(character_id)
     if not char:
         raise HTTPException(404, "character not found")
-    return char.as_dict()
+    return _char_view(char)
+
+
+@app.patch("/api/characters/{character_id}")
+def update_character(character_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Edit the actor — voice DNA, personality bible, dna_prompt, persona, name/slug."""
+    cs = CharacterStore()
+    fields = {k: v for k, v in body.items() if k in (*_CHAR_FIELDS, "name", "slug")}
+    char = cs.patch(character_id, **fields)
+    if not char:
+        raise HTTPException(404, "character not found")
+    return _char_view(char)
+
+
+@app.post("/api/characters/{character_id}/reference")
+def upload_reference(character_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Upload a reference image (real photo) as base64 — no generation spend. Body: {filename,
+    data_base64}. Makes the actor's Visual DNA visible immediately."""
+    import base64
+    cs = CharacterStore()
+    char = cs.get(character_id)
+    if not char:
+        raise HTTPException(404, "character not found")
+    raw = body.get("data_base64") or ""
+    if "," in raw and raw.strip().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise HTTPException(400, "data_base64 is not valid base64")
+    if not blob:
+        raise HTTPException(400, "empty image")
+    ext = Path(body.get("filename") or "ref.png").suffix.lower() or ".png"
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(400, "unsupported image type")
+    dest_dir = OUT_DIR / "characters" / char.slug / "reference"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"upload_{len(char.reference_images):02d}{ext}"
+    dest.write_bytes(blob)
+    cs.add_reference_images(character_id, [str(dest)])
+    return _char_view(cs.get(character_id))
+
+
+@app.get("/api/characters/{character_id}/reference/{idx}")
+def get_reference(character_id: str, idx: int):
+    cs = CharacterStore()
+    char = cs.get(character_id)
+    if not char or idx < 0 or idx >= len(char.reference_images):
+        raise HTTPException(404, "reference image not found")
+    path = Path(char.reference_images[idx])
+    if not path.is_file():
+        raise HTTPException(404, "reference file missing on disk")
+    return FileResponse(str(path))
 
 
 @app.post("/api/characters/{character_id}/mint")
@@ -183,6 +254,120 @@ def mint_reference(character_id: str, body: dict[str, Any] | None = None) -> dic
         cs.add_reference_images(character_id, paths)
     return {"character_id": character_id, "minted": paths, "cost_usd": cost,
             "errors": errors, "executed": execute}
+
+
+# --------------------------------------------------------------------------- channels (series)
+
+def _channel_view(ch, cs: CharacterStore) -> dict[str, Any]:
+    d = ch.as_dict()
+    # resolve cast to names so the UI can show the roster
+    roster = []
+    for member in ch.cast:
+        c = cs.get(member.get("character_id", ""))
+        roster.append({"character_id": member.get("character_id"), "role": member.get("role"),
+                       "name": c.name if c else "(missing)", "slug": c.slug if c else None,
+                       "has_reference": c.has_reference() if c else False,
+                       "has_voice": c.has_voice() if c else False})
+    d["roster"] = roster
+    return d
+
+
+@app.get("/api/channels")
+def list_channels() -> list[dict[str, Any]]:
+    store = JobStore()
+    ch_store, cs = ChannelStore(store), CharacterStore(store)
+    return [_channel_view(ch, cs) for ch in ch_store.list(_tenant())]
+
+
+@app.post("/api/channels")
+def create_channel(body: dict[str, Any]) -> dict[str, Any]:
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    slug = (body.get("slug") or name).strip().lower().replace(" ", "-")
+    fmt = body.get("format", "long_form")
+    if fmt not in FORMATS:
+        raise HTTPException(400, f"format must be one of {FORMATS}")
+    store = JobStore()
+    ch_store, cs = ChannelStore(store), CharacterStore(store)
+    if ch_store.get_by_slug(_tenant(), slug):
+        raise HTTPException(409, f"channel slug '{slug}' already exists")
+    fields = {k: v for k, v in body.items()
+              if k in ("platform", "format", "premise", "cast", "narrator_voice_id", "art_style",
+                       "style_reference_images", "target_scene_count", "target_duration_s",
+                       "video_budget", "writer_provider", "writer_model", "posting_cadence")}
+    ch = ch_store.create(tenant_id=_tenant(), name=name, slug=slug, **fields)
+    return _channel_view(ch, cs)
+
+
+@app.get("/api/channels/{channel_id}")
+def get_channel(channel_id: str) -> dict[str, Any]:
+    store = JobStore()
+    ch_store, cs = ChannelStore(store), CharacterStore(store)
+    ch = ch_store.get(channel_id)
+    if not ch:
+        raise HTTPException(404, "channel not found")
+    return _channel_view(ch, cs)
+
+
+@app.patch("/api/channels/{channel_id}")
+def update_channel(channel_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    store = JobStore()
+    ch_store, cs = ChannelStore(store), CharacterStore(store)
+    fields = {k: v for k, v in body.items()
+              if k in ("name", "slug", "platform", "premise", "cast", "narrator_voice_id",
+                       "art_style", "style_reference_images", "target_scene_count",
+                       "target_duration_s", "video_budget", "writer_provider", "writer_model",
+                       "series_memory", "posting_cadence", "active")}
+    ch = ch_store.patch(channel_id, **fields)
+    if not ch:
+        raise HTTPException(404, "channel not found")
+    return _channel_view(ch, cs)
+
+
+# --------------------------------------------------------------------------- episodes
+
+def _episode_view(ep, channel_name: str = "") -> dict[str, Any]:
+    d = ep.as_dict()
+    d["channel_name"] = channel_name
+    d["stage_index"] = [s.value for s in STAGE_ORDER].index(ep.stage) if ep.stage in [s.value for s in STAGE_ORDER] else 0
+    d["stages"] = [s.value for s in STAGE_ORDER]
+    d["scene_count"] = len(ep.scenes)
+    return d
+
+
+@app.get("/api/episodes")
+def list_episodes(channel_id: str | None = None) -> list[dict[str, Any]]:
+    store = JobStore()
+    ep_store, ch_store = EpisodeStore(store), ChannelStore(store)
+    names = {c.channel_id: c.name for c in ch_store.list(_tenant())}
+    eps = ep_store.list(_tenant(), channel_id=channel_id)
+    return [_episode_view(e, names.get(e.channel_id, "")) for e in eps]
+
+
+@app.post("/api/episodes")
+def create_episode(body: dict[str, Any]) -> dict[str, Any]:
+    """Create an episode shell for a channel (stage=idea/pending). Generation runs in later stages."""
+    channel_id = body.get("channel_id", "")
+    store = JobStore()
+    ep_store, ch_store = EpisodeStore(store), ChannelStore(store)
+    ch = ch_store.get(channel_id)
+    if not ch:
+        raise HTTPException(404, "channel not found (pass channel_id)")
+    ep = ep_store.create(tenant_id=_tenant(), channel_id=channel_id,
+                         title=(body.get("title") or "").strip(), cast=ch.cast_ids())
+    return _episode_view(ep, ch.name)
+
+
+@app.get("/api/episodes/{episode_id}")
+def get_episode(episode_id: str) -> dict[str, Any]:
+    store = JobStore()
+    ep_store, ch_store = EpisodeStore(store), ChannelStore(store)
+    ep = ep_store.get(episode_id)
+    if not ep:
+        raise HTTPException(404, "episode not found")
+    ch = ch_store.get(ep.channel_id)
+    return _episode_view(ep, ch.name if ch else "")
 
 
 # --------------------------------------------------------------------------- storyboards / posts
