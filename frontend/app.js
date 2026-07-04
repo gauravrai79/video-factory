@@ -102,6 +102,10 @@ async function openActor(id) {
     <div class="section-title">Visual DNA (reference sheet)</div>
     <div class="ref-strip">${refs}</div>
     <button class="ghost sm" data-upload="${c.character_id}">+ add photo</button>
+    <div class="kv2" style="margin-top:10px">
+      <label>Look / appearance <small>(text description; your reference photos override this for generation)</small>
+        <textarea id="c-dnaprompt" rows="2">${esc(c.dna_prompt || "")}</textarea></label>
+    </div>
     <div class="section-title">Voice DNA</div>
     <div class="kv2">
       <label>Provider <input id="v-provider" value="${esc(v.provider || "elevenlabs")}" /></label>
@@ -122,6 +126,7 @@ async function openActor(id) {
 }
 async function saveActor(id) {
   const body = {
+    dna_prompt: $("#c-dnaprompt").value.trim(),
     voice: { provider: $("#v-provider").value.trim(), voice_id: $("#v-id").value.trim(), signature_line: $("#v-sig").value.trim() },
     personality: {
       backstory: $("#p-back").value.trim(), traits: splitList($("#p-traits").value),
