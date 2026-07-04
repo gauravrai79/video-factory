@@ -238,8 +238,8 @@ def _assemble_rough(ep: Episode, ch: Channel) -> tuple[bool, str]:
 
 # --------------------------------------------------------------------------- run (generate stage)
 
-def run_stage(store, ep: Episode) -> Episode:
-    """Generate the current stage's artifact and park at awaiting_review."""
+def run_stage(store, ep: Episode, *, brief: str | None = None) -> Episode:
+    """Generate the current stage's artifact and park at awaiting_review. `brief` steers ideation."""
     eps, chs, cs, ch, cast = _ctx(store, ep)
     ep.writer_model = ch.writer_model or writer.default_model()
     ep.stage_status = StageStatus.GENERATING.value
@@ -248,8 +248,10 @@ def run_stage(store, ep: Episode) -> Episode:
 
     stage = Stage(ep.stage)
     if stage == Stage.IDEA:
+        if brief is not None:
+            ep.idea_brief = brief.strip()
         recent = [e.title for e in eps.list(_tenant_of(ep, eps), ch.channel_id) if e.episode_id != ep.episode_id]
-        res = writer.ideate(ch, cast, recent_titles=recent, model=ep.writer_model)
+        res = writer.ideate(ch, cast, recent_titles=recent, brief=(ep.idea_brief or None), model=ep.writer_model)
         if not res.ok:
             return _fail(eps, ep, res.error or "ideation failed")
         ep.idea_candidates = res.data["ideas"]

@@ -398,10 +398,26 @@ def get_episode(episode_id: str) -> dict[str, Any]:
     return _episode_view(ep, ch.name if ch else "")
 
 
+@app.delete("/api/episodes/{episode_id}")
+def delete_episode(episode_id: str) -> dict[str, Any]:
+    """Delete an episode and its generated media (stills/clips/audio/cuts)."""
+    import shutil
+    store = JobStore()
+    ep_store = EpisodeStore(store)
+    if not ep_store.get(episode_id):
+        raise HTTPException(404, "episode not found")
+    ep_store.delete(episode_id)
+    media = Path(os.environ.get("VF_OUT_DIR", "out")) / "episodes" / episode_id
+    if media.exists():
+        shutil.rmtree(media, ignore_errors=True)
+    return {"deleted": episode_id}
+
+
 @app.post("/api/episodes/{episode_id}/run")
-def run_stage(episode_id: str) -> dict[str, Any]:
-    """Generate the current stage's artifact (M2: ideate or script) → parks at awaiting_review."""
-    return _episode_action(episode_id, episode_pipeline.run_stage)
+def run_stage(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Generate the current stage's artifact → parks at awaiting_review. Optional {brief} steers ideation."""
+    brief = (body or {}).get("brief")
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.run_stage(s, e, brief=brief))
 
 
 @app.post("/api/episodes/{episode_id}/approve")

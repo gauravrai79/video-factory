@@ -84,6 +84,7 @@ class Episode:
     stage: str = Stage.IDEA.value
     stage_status: str = StageStatus.PENDING.value
     idea: dict[str, Any] = field(default_factory=dict)      # approved concept
+    idea_brief: str = ""                                    # optional creator steer for ideation
     idea_candidates: list[dict[str, Any]] = field(default_factory=list)  # ideate output (choose one)
     cast: list[str] = field(default_factory=list)           # resolved character_ids
     scenes: list[dict[str, Any]] = field(default_factory=list)  # list of Scene dicts
@@ -180,6 +181,11 @@ class EpisodeStore:
         )
         self.conn.commit()
         return ep
+
+    def delete(self, episode_id: str) -> bool:
+        cur = self.conn.execute("DELETE FROM episodes WHERE episode_id=?", (episode_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def patch(self, episode_id: str, **fields: Any) -> Episode | None:
         ep = self.get(episode_id)

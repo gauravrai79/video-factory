@@ -310,3 +310,15 @@ main { display: block; }
 .done-banner { background: #143a2a; border: 1px solid #1f6f4a; color: #56d364; border-radius: 9px; padding: 12px 14px; font-weight: 600; margin-bottom: 12px; }
 .dl-btn { display: inline-block; background: linear-gradient(135deg, var(--green), #2ea043); color: #fff; text-decoration: none; padding: 10px 18px; border-radius: 9px; font-weight: 600; }
 a.ghost.dl { text-decoration: none; display: inline-flex; align-items: center; }
+
+/* idea brief + drawer textareas */
+.brief-label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0; }
+.brief-label textarea, #drawer-body textarea, #drawer-body input, #drawer-body select {
+  width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 8px 10px; font: inherit; margin-top: 4px;
+}
+
+/* episode delete */
+.ep-actions { display: flex; gap: 12px; align-items: center; }
+.linklike.del { color: var(--muted); font-size: 14px; }
+.linklike.del:hover { color: var(--red); }

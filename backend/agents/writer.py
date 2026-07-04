@@ -47,7 +47,7 @@ class WriterResult:
 # --------------------------------------------------------------------------- OpenRouter call
 
 def _chat(system: str, user: str, model: str, *, temperature: float = 0.85,
-          max_tokens: int = 3000) -> tuple[str, dict[str, Any]]:
+          max_tokens: int = 3000, reasoning_effort: str | None = None) -> tuple[str, dict[str, Any]]:
     """One OpenRouter chat completion. Returns (text, usage). Raises on transport/API failure."""
     headers = {
         "Authorization": f"Bearer {_key()}",
@@ -62,6 +62,8 @@ def _chat(system: str, user: str, model: str, *, temperature: float = 0.85,
         "max_tokens": max_tokens,
         "usage": {"include": True},
     }
+    if reasoning_effort:
+        payload["reasoning"] = {"effort": reasoning_effort}   # OpenRouter reasoning control
     r = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
     data = r.json()
@@ -71,7 +73,10 @@ def _chat(system: str, user: str, model: str, *, temperature: float = 0.85,
 
 
 def _parse_json(text: str) -> dict[str, Any]:
-    """Tolerant JSON extraction (handles code fences / stray prose around the object)."""
+    """Tolerant JSON extraction: strip reasoning-model <think> blocks + code fences, then take the
+    outermost JSON object."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"```(?:json)?|```", "", text)
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
         raise ValueError("no JSON object in model output")
@@ -104,24 +109,26 @@ def _channel_system(channel, cast_chars: list) -> str:
 # --------------------------------------------------------------------------- ideate
 
 def ideate(channel, cast_chars: list, *, recent_titles: list[str] | None = None,
-           n: int = 4, model: str | None = None) -> WriterResult:
-    """Propose n distinct episode concepts from the channel bible."""
+           brief: str | None = None, n: int = 4, model: str | None = None,
+           reasoning_effort: str | None = None) -> WriterResult:
+    """Propose n distinct episode concepts from the channel bible, optionally steered by `brief`."""
     model = model or channel.writer_model or default_model()
     recent = recent_titles or []
     if not _key():
-        return _stub_ideate(channel, n)
+        return _stub_ideate(channel, n, brief)
 
     system = _channel_system(channel, cast_chars)
     avoid = f" Avoid repeating these existing episodes: {', '.join(recent)}." if recent else ""
+    steer = f"\nThe creator's steer for these ideas (build the concepts around this): {brief}\n" if brief else ""
     user = (
-        f"Propose {n} distinct, bingeable episode concepts for this series.{avoid}\n"
+        f"Propose {n} distinct, bingeable episode concepts for this series.{avoid}{steer}\n"
         "Each concept: a punchy title, a one-sentence logline, a hook (the opening beat that grabs "
         "attention), and 3-5 story beats.\n"
         "Respond with ONLY JSON, no prose:\n"
         '{"ideas": [{"title": "...", "logline": "...", "hook": "...", "beats": ["...", "..."]}]}'
     )
     try:
-        text, usage = _chat(system, user, model, max_tokens=1800)
+        text, usage = _chat(system, user, model, max_tokens=1800, reasoning_effort=reasoning_effort)
         data = _parse_json(text)
         ideas = data.get("ideas") or []
         if not isinstance(ideas, list) or not ideas:
@@ -210,8 +217,8 @@ def _normalize_scenes(scenes: list[dict], channel) -> list[dict]:
 
 # --------------------------------------------------------------------------- deterministic stubs
 
-def _stub_ideate(channel, n: int) -> WriterResult:
-    base = channel.premise or channel.name
+def _stub_ideate(channel, n: int, brief: str | None = None) -> WriterResult:
+    base = brief or channel.premise or channel.name
     ideas = [{
         "title": f"{channel.name}: Case #{i + 1}" if not channel.is_short() else f"{channel.name} — Ep {i + 1}",
         "logline": f"A fresh take on: {base}",

@@ -150,7 +150,8 @@ function channelCard(ch) {
     <div class="ch-premise">${esc(ch.premise || "no premise")}</div>
     <div class="roster">${roster}</div>
     <div class="ch-meta">${ch.target_scene_count} scenes · ${ch.target_duration_s}s · budget ${ch.video_budget} · ${esc(ch.writer_provider)} · <span class="art">${esc(ch.art_style || "no style")}</span></div>
-    <div class="actor-actions"><button class="linklike" data-new-ep="${ch.channel_id}">+ episode</button></div>
+    <div class="actor-actions"><button class="linklike" data-new-ep="${ch.channel_id}">+ episode</button>
+      <button class="linklike" data-edit-channel="${ch.channel_id}">edit</button></div>
   </div>`;
 }
 
@@ -178,6 +179,53 @@ $("#channel-form").addEventListener("submit", async (e) => {
   } catch (err) { msg.className = "hint err"; msg.textContent = "Error: " + err.message; }
 });
 
+// edit channel drawer
+function _opt(val, cur, label) { return `<option value="${val}" ${val === cur ? "selected" : ""}>${label || val}</option>`; }
+async function openChannel(id) {
+  const c = await api(`/api/channels/${id}`);
+  const casts = characters.map((ch) => {
+    const inCast = (c.cast || []).find((m) => m.character_id === ch.character_id);
+    return `<label class="cast-opt"><input type="checkbox" value="${ch.character_id}" ${inCast ? "checked" : ""}/> ${esc(ch.name)}</label>`;
+  }).join("") || `<span class="muted">no characters</span>`;
+  $("#drawer-body").innerHTML = `
+    <h2>Edit channel</h2>
+    <div class="fsn">${esc(c.slug)}</div>
+    <div class="kv2">
+      <label>Name <input id="ec-name" value="${esc(c.name)}"/></label>
+      <label>Platform <input id="ec-platform" value="${esc(c.platform)}"/></label>
+      <label>Format <select id="ec-format">${_opt("long_form", c.format)}${_opt("short_form", c.format)}</select></label>
+      <label>Art style <input id="ec-style" value="${esc(c.art_style)}"/></label>
+      <label>Premise <textarea id="ec-premise" rows="3">${esc(c.premise)}</textarea></label>
+      <label>Narrator voice <input id="ec-narr" value="${esc(c.narrator_voice_id)}"/></label>
+      <div class="row2">
+        <label>Scenes <input type="number" id="ec-scenes" value="${c.target_scene_count}"/></label>
+        <label>Duration (s) <input type="number" id="ec-dur" value="${c.target_duration_s}"/></label>
+      </div>
+      <div class="row2">
+        <label>Video budget <input type="number" id="ec-budget" value="${c.video_budget}"/></label>
+        <label>Writer <input id="ec-writer" value="${esc(c.writer_provider)}"/></label>
+      </div>
+    </div>
+    <div class="section-title">Cast <small>(first checked = lead)</small></div>
+    <div id="ec-cast" class="cast-picker">${casts}</div>
+    <div class="post-actions"><button id="ec-save" data-channel="${c.channel_id}">Save channel</button></div>
+    <p class="hint" id="ec-msg"></p>`;
+  $("#backdrop").hidden = false; $("#drawer").hidden = false;
+}
+async function saveChannel(id) {
+  const picked = [...document.querySelectorAll("#ec-cast input:checked")].map((i) => i.value);
+  const cast = picked.map((cid, i) => ({ character_id: cid, role: i === 0 ? "lead" : "sidekick" }));
+  const body = {
+    name: $("#ec-name").value.trim(), platform: $("#ec-platform").value.trim(), format: $("#ec-format").value,
+    art_style: $("#ec-style").value.trim(), premise: $("#ec-premise").value.trim(),
+    narrator_voice_id: $("#ec-narr").value.trim(), target_scene_count: Number($("#ec-scenes").value),
+    target_duration_s: Number($("#ec-dur").value), video_budget: Number($("#ec-budget").value),
+    writer_provider: $("#ec-writer").value.trim(), cast,
+  };
+  try { await jpatch(`/api/channels/${id}`, body); $("#ec-msg").className = "hint ok"; $("#ec-msg").textContent = "Saved."; refreshChannels(); }
+  catch (err) { $("#ec-msg").className = "hint err"; $("#ec-msg").textContent = "Error: " + err.message; }
+}
+
 // ---------- episodes ----------
 async function refreshEpisodes() {
   episodes = await api("/api/episodes");
@@ -198,7 +246,16 @@ function epRow(e) {
   return `<tr>
     <td>${esc(e.channel_name)}</td><td>${e.number}</td><td>${esc(e.title)}</td>
     <td>${stepper(e)} <small class="muted">${esc(e.stage_status)}</small></td>
-    <td><button class="linklike" data-episode="${e.episode_id}">open →</button></td></tr>`;
+    <td class="ep-actions"><button class="linklike" data-episode="${e.episode_id}">open →</button>
+      <button class="linklike del" data-del-ep="${e.episode_id}" title="delete episode">🗑</button></td></tr>`;
+}
+async function delEpisode(id) {
+  if (!confirm("Delete this episode and its generated media? This can't be undone.")) return;
+  try {
+    await api(`/api/episodes/${id}`, { method: "DELETE" });
+    if (!$("#drawer").hidden) closeDrawer();
+    refreshEpisodes(); refreshSummary();
+  } catch (err) { alert("Error: " + err.message); }
 }
 async function newEpisode(channelId) {
   const title = prompt("Episode title (optional):") || "";
@@ -317,14 +374,18 @@ function stagePanel(e) {
   }
   // IDEA
   if (e.stage === "idea") {
+    const briefBox = `<label class="brief-label">Idea brief <small>(optional — steer what gets generated)</small>
+      <textarea id="idea-brief" rows="2" placeholder="e.g. a rainy-night stakeout; introduce a cat burglar villain; keep it lighthearted">${esc(e.idea_brief || "")}</textarea></label>`;
     if (e.stage_status === "awaiting_review" && e.idea_candidates.length) {
       return `${err}<div class="section-title">Pick an episode idea</div>
         <div class="idea-grid">${e.idea_candidates.map((x, i) => ideaCard(x, i, true)).join("")}</div>
-        <div class="gate-row"><button class="ghost" data-run="${e.episode_id}">↻ regenerate ideas</button></div>`;
+        ${briefBox}
+        <div class="gate-row"><button class="ghost" data-run-idea="${e.episode_id}">↻ regenerate ideas</button></div>`;
     }
     return `${err}<div class="section-title">Ideate</div>
-      <p class="muted">Generate episode concepts from the channel premise + cast personalities. Text only — near-free.</p>
-      <button data-run="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✨ Generate ideas"}</button>`;
+      <p class="muted">Generate episode concepts from the channel premise + cast — optionally steered by your brief. Text only — near-free.</p>
+      ${briefBox}
+      <button data-run-idea="${e.episode_id}" ${busy ? "disabled" : ""}>${busy ? "working…" : "✨ Generate ideas"}</button>`;
   }
   // SCRIPT
   if (e.stage === "script") {
@@ -370,7 +431,15 @@ document.addEventListener("click", (e) => {
   if (t.dataset.upload) { uploadTarget = t.dataset.upload; fileInput.click(); return; }
   if (t.dataset.actor) return saveActor(t.dataset.actor);
   if (t.dataset.newEp) return newEpisode(t.dataset.newEp);
+  if (t.dataset.editChannel) return openChannel(t.dataset.editChannel);
+  if (t.dataset.channel) return saveChannel(t.dataset.channel);
+  if (t.dataset.delEp) return delEpisode(t.dataset.delEp);
   if (t.dataset.episode) return openEpisode(t.dataset.episode);
+  if (t.dataset.runIdea) {
+    const brief = ($("#idea-brief") ? $("#idea-brief").value : "").trim();
+    if (curEpisode) { curEpisode.stage_status = "generating"; curEpisode.idea_brief = brief; renderEpisode(); }
+    return epAction(() => jpost(`/api/episodes/${t.dataset.runIdea}/run`, { brief }));
+  }
   if (t.dataset.run) { if (curEpisode) { curEpisode.stage_status = "generating"; renderEpisode(); } return epAction(() => jpost(`/api/episodes/${t.dataset.run}/run`, {})); }
   if (t.dataset.runPaid) {
     const est = curEpisode ? Number(curEpisode.stage_estimate_usd || 0).toFixed(2) : "?";
