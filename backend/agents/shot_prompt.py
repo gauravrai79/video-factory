@@ -24,6 +24,7 @@ def reference_still_prompt(scene: dict, present: list[Character], channel: Chann
     stylised style is set, the referenced characters are explicitly re-rendered in that style (so
     photoreal reference photos still become e.g. 3D-comic characters)."""
     style = channel.art_style or "cinematic, photorealistic"
+    setting = (getattr(channel, "world", "") or "").strip()
     heading = scene.get("heading", "")
     action = scene.get("action", "")
     camera = scene.get("camera", "")
@@ -33,14 +34,18 @@ def reference_still_prompt(scene: dict, present: list[Character], channel: Chann
                    f"reference images but restyle them to fully match this art style")
     else:
         subject = f"Atmospheric establishing shot, no characters, in a {style} art style"
-    prompt = ". ".join(p for p in [f"Art style: {style}", heading, subject, action, camera, _GUARD] if p)
+    # Setting leads the scene description so the world (e.g. contemporary India) anchors every frame.
+    world_line = f"Setting — {setting}" if setting else ""
+    prompt = ". ".join(p for p in [f"Art style: {style}", world_line, heading, subject, action, camera, _GUARD] if p)
     refs = [p for c in present for p in c.reference_images]
     return prompt, refs
 
 
-def motion_prompt(scene: dict, present: list[Character]) -> str:
+def motion_prompt(scene: dict, present: list[Character], channel: Channel | None = None) -> str:
     """Prompt for image-to-video on a hero scene — keep the subject, add the scene's action + camera."""
     who = ", ".join(c.name for c in present) or "the subject"
-    return (f"{who}. {scene.get('action', '')}. Camera: {scene.get('camera', '')}. "
+    setting = (getattr(channel, "world", "") or "").strip() if channel else ""
+    world_line = f" Setting: {setting}." if setting else ""
+    return (f"{who}. {scene.get('action', '')}. Camera: {scene.get('camera', '')}.{world_line} "
             f"Natural, subtle motion; keep identity, face, and wardrobe consistent; "
             f"smooth realistic movement, no morphing or warping.")

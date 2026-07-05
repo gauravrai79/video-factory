@@ -115,14 +115,14 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
     return info, res.cost_usd
 
 
-def _gen_scene_clip(scene: dict, cast_map: dict[str, Character], spec: OutputSpec,
+def _gen_scene_clip(scene: dict, cast_map: dict[str, Character], ch: Channel, spec: OutputSpec,
                     out_dir: Path) -> tuple[dict, float]:
     present = shot_prompt.scene_cast(scene, cast_map)
     still = (scene.get("reference_image") or {}).get("path")
     if not still:
         return {"status": "failed", "error": "no reference image"}, 0.0
     path = str(out_dir / "clips" / f"{scene['seq']:03d}.mp4")
-    res = fal_video.generate_video(prompt=shot_prompt.motion_prompt(scene, present),
+    res = fal_video.generate_video(prompt=shot_prompt.motion_prompt(scene, present, ch),
                                    image_url=image_ref(still), output_path=path,
                                    model=pricing.DEFAULT_VIDEO_MODEL,
                                    duration_s=scene.get("duration_s", 5),
@@ -351,7 +351,7 @@ def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = 
         ep.log("ref_reroll", {"seq": seq, "status": info["status"], "cost_usd": cost})
     elif ep.stage == Stage.SCENES.value:
         if scene.get("shot_type") == "hero_video":
-            info, cost = _gen_scene_clip(scene, cast_map, channel_spec(ch), out_dir)
+            info, cost = _gen_scene_clip(scene, cast_map, ch, channel_spec(ch), out_dir)
             scene["clip"] = info
             ep.spent_usd = round(ep.spent_usd + cost, 4)
         _assemble_rough(ep, ch)             # rebuild the rough cut with the new asset
@@ -425,7 +425,7 @@ def generate_scenes(store, ep: Episode) -> Episode:
             if cl.get("status") == "ok" and Path(cl.get("path", "")).is_file():
                 pass                               # already generated — never re-charge on retry
             else:
-                info, cost = _gen_scene_clip(scene, cast_map, spec, out_dir)
+                info, cost = _gen_scene_clip(scene, cast_map, ch, spec, out_dir)
                 scene["clip"] = info
                 spent += cost
                 failed += (info["status"] != "ok")

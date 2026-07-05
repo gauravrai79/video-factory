@@ -295,8 +295,9 @@ def create_channel(body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(409, f"channel slug '{slug}' already exists")
     fields = {k: v for k, v in body.items()
               if k in ("platform", "format", "premise", "cast", "narrator_voice_id", "art_style",
-                       "style_reference_images", "target_scene_count", "target_duration_s",
-                       "video_budget", "writer_provider", "writer_model", "posting_cadence")}
+                       "world", "language", "style_reference_images", "target_scene_count",
+                       "target_duration_s", "video_budget", "writer_provider", "writer_model",
+                       "posting_cadence")}
     ch = ch_store.create(tenant_id=_tenant(), name=name, slug=slug, **fields)
     return _channel_view(ch, cs)
 
@@ -317,7 +318,7 @@ def update_channel(channel_id: str, body: dict[str, Any]) -> dict[str, Any]:
     ch_store, cs = ChannelStore(store), CharacterStore(store)
     fields = {k: v for k, v in body.items()
               if k in ("name", "slug", "platform", "premise", "cast", "narrator_voice_id",
-                       "art_style", "style_reference_images", "target_scene_count",
+                       "art_style", "world", "language", "style_reference_images", "target_scene_count",
                        "target_duration_s", "video_budget", "writer_provider", "writer_model",
                        "series_memory", "posting_cadence", "active")}
     ch = ch_store.patch(channel_id, **fields)

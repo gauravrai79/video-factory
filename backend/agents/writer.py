@@ -95,10 +95,16 @@ def _cast_block(cast_chars: list) -> str:
 
 def _channel_system(channel, cast_chars: list) -> str:
     fmt = "long-form narrative" if not channel.is_short() else "short-form"
+    lang = (getattr(channel, "language", "") or "English").strip()
+    world = (getattr(channel, "world", "") or "").strip()
     parts = [
         f"You are the writers' room for a {channel.platform} {fmt} series titled \"{channel.name}\".",
         f"Premise: {channel.premise}" if channel.premise else "",
+        f"Setting / world: {world}" if world else "",
         f"Visual/tone style: {channel.art_style}." if channel.art_style else "",
+        (f"LANGUAGE: write ALL spoken content — every dialogue line AND every narration/VO line — "
+         f"in {lang}. Keep the whole episode in {lang}; never narrate in English over {lang} dialogue."
+         if lang and lang.lower() != "english" else ""),
         "",
         "CAST (keep each character's voice, traits, and relationships perfectly consistent):",
         _cast_block(cast_chars),
@@ -223,6 +229,7 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         "For each scene give: heading (setting/time), action, camera, cast_present (character_ids), "
         "dialogue (list of {speaker: character_id, line, delivery}), narration (VO text, may be empty), "
         "shot_type, duration_s.\n"
+        f"Every `line` and `narration` value MUST be written in {getattr(channel, 'language', 'English')}.\n"
         "Respond with ONLY JSON, no prose:\n"
         '{"scenes": [{"heading": "...", "action": "...", "camera": "...", "cast_present": ["id"], '
         '"dialogue": [{"speaker": "id", "line": "...", "delivery": "..."}], "narration": "...", '

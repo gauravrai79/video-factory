@@ -37,6 +37,8 @@ class Channel:
     cast: list[dict[str, str]] = field(default_factory=list)   # [{character_id, role}]
     narrator_voice_id: str = ""                 # channel-level narrator voice
     art_style: str = ""                         # e.g. "noir cinematic", "photoreal glamour"
+    world: str = ""                             # setting/location bible injected into EVERY visual prompt
+    language: str = "English"                   # spoken language for dialogue + narration + VO
     style_reference_images: list[str] = field(default_factory=list)   # lock the look
     target_scene_count: int = 16                # long-form ~15-20; short-form ~3
     target_duration_s: int = 120
