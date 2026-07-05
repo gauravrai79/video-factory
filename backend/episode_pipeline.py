@@ -302,6 +302,7 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
         if not res.ok:
             return _fail(eps, ep, res.error or "scripting failed")
         ep.scenes = res.data["scenes"]
+        ep.refs_batch_done = False          # fresh script -> old reference batch is invalid
         _bill(ep, res)
         ep.stage_status = StageStatus.AWAITING_REVIEW.value
         ep.log("script", {"scenes": len(ep.scenes), "model": res.model, "stub": res.stubbed})
