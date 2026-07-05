@@ -268,7 +268,12 @@ def assemble(
         if music_path:
             cmd += ["-i", str(music_path)]
 
-        graph, base_label = _video_graph(len(parts), [s.duration_s for s in shots], transition_s)
+        # Offsets must come from the ACTUAL normalized clip lengths, not the scripted
+        # durations: a hero video may be physically shorter than its scripted slot, and
+        # feeding scripted values to the chained xfade drifts each offset past the real
+        # end of the intermediate stream, collapsing the whole cut to a few seconds.
+        actual_durs = [media_duration(p) for p in parts]
+        graph, base_label = _video_graph(len(parts), actual_durs, transition_s)
         if overlays:
             filtergraph = (graph + ";" if graph else "") + f"{base_label}{overlays}[v]"
             vlabel = "[v]"
