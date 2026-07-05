@@ -306,9 +306,12 @@ function stageScript(e, gen, ro) {
     : `<p class="muted">No script recorded.</p>`;
   const chosen = e.idea && e.idea.title ? `<div class="stage-intro"><b>${esc(e.idea.title)}</b> — ${esc(e.idea.logline || "")}</div>` : "";
   if (e.stage_status === "awaiting_review" && e.scenes.length) {
-    return `${chosen}<div class="section-title" style="margin-top:0">Script — ${e.scenes.length} scenes <small class="muted">· click <b>edit</b> on any scene</small></div>
-      <div class="script">${e.scenes.map((s) => sceneRow(s, true)).join("")}</div>
-      ${actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve script</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Rewrite all</button>`])}`;
+    const bar = gen
+      ? `<div class="stage-intro">${spin()} Rewriting the whole script… (a few seconds)</div>`
+      : actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve script</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Rewrite all</button>`]);
+    return `${chosen}<div class="section-title" style="margin-top:0">Script — ${e.scenes.length} scenes ${gen ? "" : `<small class="muted">· click <b>edit</b> on any scene</small>`}</div>
+      <div class="script"${gen ? ' style="opacity:.45;pointer-events:none"' : ""}>${e.scenes.map((s) => sceneRow(s, !gen)).join("")}</div>
+      ${bar}`;
   }
   return `${chosen}<p class="stage-intro">Expand the idea into a scene-by-scene script (dialogue, narration, shot types). Near-free.</p>
     <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("edit")} ${gen ? "Writing…" : "Write script"}</button>`;
@@ -522,7 +525,14 @@ document.addEventListener("click", async (ev) => {
   // workspace stage actions
   if (d.runidea !== undefined) { const brief = $("#idea-brief") ? $("#idea-brief").value.trim() : ""; return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/run`, { brief }), true); }
   if (d.pickidea !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/approve`, { choice: Number(d.pickidea) }));
-  if (d.run !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/run`, {}), true);
+  if (d.run !== undefined) {
+    const isScript = S.ep.stage === "script";               // inline stage — resolves when done
+    return epAct(async () => {
+      const r = await jpost(`/api/episodes/${S.ep.episode_id}/run`, {});
+      if (isScript) toast("Script rewritten", "ok");
+      return r;
+    }, true);
+  }
   if (d.approve !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/approve`, {}));
   if (d.runrefs !== undefined) { const sn = $("#style-note") ? $("#style-note").value.trim() : ""; return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/run`, { style_note: sn }), true); }
   if (d.refsbatch !== undefined) { const sn = $("#style-note") ? $("#style-note").value.trim() : ""; const n = S.ep.scene_count - 1, cost = (n * S.ep.image_unit_cost).toFixed(2); if (!confirm(`Generate ${n} more images (~$${cost})?`)) return; return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/refs/batch`, { style_note: sn }), true); }
