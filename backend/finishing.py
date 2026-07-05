@@ -98,6 +98,17 @@ def media_duration(path: str | Path) -> float:
         return 0.0
 
 
+def stub_image(output_path: str | Path, *, width: int = 1280, height: int = 720,
+               color: str = "gray") -> bool:
+    """Write a solid placeholder PNG. Used by no-key image stubs so the whole pipeline (refs ->
+    scenes -> assembly) runs end-to-end at $0 for tests, matching the voice/lipsync stubs."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [FFMPEG, "-y", "-f", "lavfi", "-i", f"color=c={color}:s={width}x{height}",
+           "-frames:v", "1", str(out)]
+    return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+
+
 def _summary(path: str | Path) -> dict:
     data = probe(path)
     fmt = data.get("format", {})

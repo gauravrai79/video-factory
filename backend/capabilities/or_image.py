@@ -53,6 +53,8 @@ def generate_still(*, prompt: str, output_path: str, reference_image_urls: list[
     or_model = OR_IMAGE_MODELS.get(model, model)
     est = pricing.image_cost(model)
     if not execute or not _key():
+        from ..finishing import stub_image
+        stub_image(output_path)                      # placeholder so the pipeline is testable at $0
         return GenResult(success=True, provider="openrouter", model=or_model, cost_usd=est,
                          raw={"dry_run": True})
 

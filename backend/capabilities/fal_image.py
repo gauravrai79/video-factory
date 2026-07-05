@@ -57,7 +57,9 @@ def generate_still(
     sim = _simulated_failure(model)
     if sim:
         return GenResult(success=False, provider="fal-image", model=f"fal-ai/{model_path}", error=sim)
-    if not execute:
+    if not execute or not _fal_key():
+        from ..finishing import stub_image
+        stub_image(output_path)                      # placeholder so the pipeline is testable at $0
         return GenResult(success=True, provider="fal-image", model=f"fal-ai/{model_path}",
                          cost_usd=est, raw={"dry_run": True, "refs": len(refs)})
 
