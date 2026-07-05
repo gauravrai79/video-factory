@@ -379,7 +379,7 @@ def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = 
         if scene.get("shot_type") == "lipsync_still" and vpath:
             still = (scene.get("reference_image") or {}).get("path")
             talk = str(out_dir / "talk" / f"{scene['seq']:03d}.mp4")
-            lr = lipsync_cap.lipsync(image_path=still, audio_path=vpath, output_path=talk)
+            lr = lipsync_cap.lipsync(image_path=still, audio_path=vpath, output_path=talk, resolution="720p")
             ep.spent_usd = round(ep.spent_usd + lr.cost_usd, 4)
             scene["duration_s"] = round(lr.duration_s or scene.get("duration_s", 5), 2)
             scene["audio"] = {"voice": vpath, "talk": (talk if lr.ok else None)}
@@ -479,7 +479,7 @@ def generate_audio(store, ep: Episode) -> Episode:
         if scene.get("shot_type") == "lipsync_still" and vpath:
             still = (scene.get("reference_image") or {}).get("path")
             talk = str(out_dir / "talk" / f"{scene['seq']:03d}.mp4")
-            lr = lipsync_cap.lipsync(image_path=still, audio_path=vpath, output_path=talk)
+            lr = lipsync_cap.lipsync(image_path=still, audio_path=vpath, output_path=talk, resolution="720p")
             spent += lr.cost_usd
             scene["duration_s"] = round(lr.duration_s or scene.get("duration_s", 5), 2)
             scene["audio"] = {"voice": vpath, "talk": (talk if lr.ok else None), "status": "ok"}

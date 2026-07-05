@@ -201,13 +201,17 @@ def ideate(channel, cast_chars: list, *, recent_titles: list[str] | None = None,
 # --------------------------------------------------------------------------- script
 
 _SHOT_RULES = (
-    "Assign every scene a shot_type — pick the CHEAPEST that sells the beat (this controls cost):\n"
-    "  - \"broll\": atmosphere / establishing / insert with NO main character on screen (cheapest).\n"
-    "  - \"still_kenburns\": narration-over or a held reaction; a still with slow pan/zoom (cheap).\n"
-    "  - \"lipsync_still\": a character TALKING on camera (a still animated to the voice) — use for "
-    "most dialogue (cheap).\n"
-    "  - \"hero_video\": a character physically ACTING/MOVING; reserve these — at most {budget} per "
-    "episode (expensive).\n"
+    "Assign every scene a shot_type. If a CHARACTER is on screen the shot MUST have real motion — "
+    "never a static still:\n"
+    "  - \"lipsync_still\": a character TALKING on camera — use for EVERY scene with dialogue. The "
+    "frame is animated into a moving, lip-synced talking performance (it is NOT a static still).\n"
+    "  - \"hero_video\": a character doing a physical ACTION / dynamic movement with little or no "
+    "dialogue — full generative motion. Reserve to at most {budget} per episode (most expensive).\n"
+    "  - \"broll\": establishing / atmosphere / insert with NO character on screen — a cheap still "
+    "pan. Use ONLY when no character is present.\n"
+    "  - \"still_kenburns\": a held object/detail insert with NO character — cheap still pan.\n"
+    "HARD RULE: if cast_present is non-empty, shot_type MUST be hero_video or lipsync_still — never "
+    "broll or still_kenburns. Stills are for character-free shots only.\n"
     "At most ONE speaking character per scene (cut between characters across scenes) — never two "
     "people talking in the same shot.\n"
 )
@@ -238,6 +242,8 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         "Density target for `action` (adapt per beat): 'At a neon-lit chai stall in light rain, Zruv "
         "crouches low with a worried frown while Jango sits alert at ground level beside him, both "
         "washed in warm neon; steam curls from a kettle; wet reflections shimmer on the wet pavement.'\n"
+        "Keep the main characters ON SCREEN and acting in MOST scenes — use character-free b-roll "
+        "sparingly (at most ~3-4 establishing/insert shots in the whole episode).\n"
         "For each scene give: heading (location - time of day), action (the rich shot above), camera, "
         "cast_present (character_ids on screen), dialogue (list of {speaker, line, delivery}), narration "
         "(VO text, may be empty), shot_type, duration_s.\n"
@@ -285,9 +291,17 @@ def _normalize_scenes(scenes: list[dict], channel) -> list[dict]:
     out = []
     for i, s in enumerate(scenes):
         st = s.get("shot_type") if s.get("shot_type") in valid else "still_kenburns"
+        cast = s.get("cast_present") or []
+        has_dialogue = bool(_single_speaker(s.get("dialogue") or []))
+        # Character on screen -> MUST move: talking -> lip-synced animation, else -> hero video.
+        # No character -> keep it a cheap still (never spend on video for pure b-roll).
+        if cast:
+            st = "lipsync_still" if has_dialogue else "hero_video"
+        elif st in ("hero_video", "lipsync_still"):
+            st = "broll"
         if st == "hero_video":
             if videos >= channel.video_budget:
-                st = "lipsync_still"
+                st = "still_kenburns"          # action over budget -> pan the still (rare)
             else:
                 videos += 1
         out.append({
