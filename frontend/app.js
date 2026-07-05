@@ -178,7 +178,7 @@ function actorCard(c) {
 function viewCharacter(id) {
   const c = charById(id); if (!c) return `<p class="muted">Character not found.</p>`;
   const p = c.personality || {}, v = c.voice || {};
-  const refs = (c.reference_image_urls || []).map((u) => `<img src="${u}"/>`).join("") || `<p class="muted">No reference photos.</p>`;
+  const refs = (c.reference_image_urls || []).map((u, i) => `<div class="ref-thumb"><img src="${u}"/><button class="ref-del" data-delref="${c.character_id}:${i}" title="Delete photo">${icon("x","icon")}</button></div>`).join("") || `<p class="muted">No reference photos.</p>`;
   return `<a class="ws-back" data-nav="c/${S.channelId}/cast">${icon("back")} Cast</a>
     <div class="page-head" style="margin-top:12px"><div><h1>${esc(c.name)}</h1><div class="sub">${esc(c.species)}</div></div>
       <div style="display:flex;gap:10px"><button class="btn btn-ghost" data-uploadref="${c.character_id}">${icon("upload")} Add photo</button>
@@ -497,7 +497,7 @@ async function epAct(fn, optimisticGen) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene]");
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref]");
   // close dropdown on outside click
   if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
   if (!t) return;
@@ -510,6 +510,13 @@ document.addEventListener("click", async (ev) => {
   if (d.newchar !== undefined) return modalCharacter();
   if (d.editchar) return modalCharacter(charById(d.editchar));
   if (d.uploadref) return uploadRef(d.uploadref);
+  if (d.delref) {
+    const [cid, idx] = d.delref.split(":");
+    if (!confirm("Delete this reference photo?")) return;
+    try { await jdel(`/api/characters/${cid}/reference/${idx}`); S.characters = await jget("/api/characters"); toast("Photo deleted"); render(); }
+    catch (err) { toast(err.message, "err"); }
+    return;
+  }
   if (d.newep !== undefined) return newEpisode();
   if (d.delep) return delEpisode(d.delep);
   // workspace stage actions

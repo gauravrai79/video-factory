@@ -235,6 +235,16 @@ def get_reference(character_id: str, idx: int):
     return FileResponse(str(path))
 
 
+@app.delete("/api/characters/{character_id}/reference/{idx}")
+def delete_reference(character_id: str, idx: int) -> dict[str, Any]:
+    """Remove one reference image from a character's Visual DNA."""
+    cs = CharacterStore()
+    char = cs.remove_reference_image(character_id, idx)
+    if not char:
+        raise HTTPException(404, "reference image not found")
+    return _char_view(char)
+
+
 @app.post("/api/characters/{character_id}/mint")
 def mint_reference(character_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     """Mint a reference sheet for a text-described character (e.g. a synthetic glamour persona).

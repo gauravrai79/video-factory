@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from pathlib import Path
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
@@ -181,6 +182,21 @@ class CharacterStore:
             return None
         char.reference_images = list(dict.fromkeys([*char.reference_images, *paths]))
         return self.update(char)
+
+    def remove_reference_image(self, character_id: str, idx: int) -> Character | None:
+        """Drop the reference image at index idx (and best-effort delete the file on disk)."""
+        char = self.get(character_id)
+        if not char or idx < 0 or idx >= len(char.reference_images):
+            return None
+        removed = char.reference_images.pop(idx)
+        char = self.update(char)
+        try:
+            p = Path(removed)
+            if p.is_file() and "characters" in p.parts:      # only our own uploaded refs
+                p.unlink()
+        except OSError:
+            pass
+        return char
 
     def patch(self, character_id: str, **fields: Any) -> Character | None:
         """Partial update — set only the given known fields (e.g. voice, personality, dna_prompt)."""
