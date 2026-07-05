@@ -472,6 +472,13 @@ def edit_artifact(episode_id: str, body: dict[str, Any]) -> dict[str, Any]:
         s, e, idea=body.get("idea"), scenes=body.get("scenes")))
 
 
+@app.post("/api/episodes/{episode_id}/reopen")
+def reopen_stage(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Re-open a previously-approved stage (e.g. script) to edit or re-run it."""
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.reopen_stage(
+        s, e, stage=str((body or {}).get("stage", "script"))))
+
+
 @app.post("/api/episodes/{episode_id}/scene/{seq}/reroll")
 def reroll_scene(episode_id: str, seq: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
     """Re-generate one scene's asset for the current stage (still at refs, hero clip at scenes)."""

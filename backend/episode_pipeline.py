@@ -582,6 +582,21 @@ def edit_artifact(store, ep: Episode, *, idea: dict[str, Any] | None = None,
     return eps.update(ep)
 
 
+def reopen_stage(store, ep: Episode, *, stage: str) -> Episode:
+    """Re-open a previously-approved stage so it can be edited or re-run. Sets it as the current
+    stage, awaiting review, so run_stage / edit_artifact apply to it again. Downstream stages are
+    left as-is on disk but fall 'behind' the pointer, so the stepper shows they need re-running."""
+    eps = EpisodeStore(store)
+    valid = {s.value for s in Stage}
+    if stage not in valid:
+        return _fail(eps, ep, f"unknown stage '{stage}'")
+    ep.stage = stage
+    ep.stage_status = StageStatus.AWAITING_REVIEW.value
+    ep.stage_error = ""
+    ep.log("reopen", {"stage": stage})
+    return eps.update(ep)
+
+
 # --------------------------------------------------------------------------- helpers
 
 def _fail(eps: EpisodeStore, ep: Episode, msg: str) -> Episode:

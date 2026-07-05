@@ -300,21 +300,53 @@ function ideaCard(x, i) {
 
 /* --- Script --- */
 function stageScript(e, gen, ro) {
-  if (ro) return e.scenes.length ? `<div class="script">${e.scenes.map(sceneRow).join("")}</div>` : `<p class="muted">No script recorded.</p>`;
+  if (ro) return e.scenes.length
+    ? `<div class="script">${e.scenes.map((s) => sceneRow(s, false)).join("")}</div>
+       ${actionBar([`<button class="btn btn-primary" data-reopen="script">${icon("edit")} Edit / re-write script</button>`])}`
+    : `<p class="muted">No script recorded.</p>`;
   const chosen = e.idea && e.idea.title ? `<div class="stage-intro"><b>${esc(e.idea.title)}</b> — ${esc(e.idea.logline || "")}</div>` : "";
   if (e.stage_status === "awaiting_review" && e.scenes.length) {
-    return `${chosen}<div class="section-title" style="margin-top:0">Script — ${e.scenes.length} scenes</div>
-      <div class="script">${e.scenes.map(sceneRow).join("")}</div>
-      ${actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve script</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Rewrite</button>`])}`;
+    return `${chosen}<div class="section-title" style="margin-top:0">Script — ${e.scenes.length} scenes <small class="muted">· click <b>edit</b> on any scene</small></div>
+      <div class="script">${e.scenes.map((s) => sceneRow(s, true)).join("")}</div>
+      ${actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve script</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Rewrite all</button>`])}`;
   }
   return `${chosen}<p class="stage-intro">Expand the idea into a scene-by-scene script (dialogue, narration, shot types). Near-free.</p>
     <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("edit")} ${gen ? "Writing…" : "Write script"}</button>`;
 }
-function sceneRow(s) {
+function sceneRow(s, editable) {
   const nm = (id) => (charById(id) || {}).name || "?";
-  return `<div class="sc"><div class="h"><b>${esc(s.heading || "scene")}</b><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span><small>${s.duration_s}s</small></div>
+  const edit = editable ? `<button class="reroll-link" data-editscene="${s.seq}">${icon("edit","icon")} edit</button>` : "";
+  return `<div class="sc"><div class="h"><b>${esc(s.heading || "scene")}</b><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span><small>${s.duration_s}s</small>${edit}</div>
     <div class="act">${esc(s.action || "")}</div>${s.narration ? `<div class="vo">${icon("mic","icon")} ${esc(s.narration)}</div>` : ""}
     ${(s.dialogue || []).map((d) => `<div class="line"><b>${esc(nm(d.speaker))}</b>: ${esc(d.line)}${d.delivery ? ` <em>(${esc(d.delivery)})</em>` : ""}</div>`).join("")}</div>`;
+}
+function modalScene(seq) {
+  const s = (S.ep.scenes || [])[seq]; if (!s) return;
+  const shots = ["broll", "still_kenburns", "lipsync_still", "hero_video"];
+  const opts = (sel, list, val = (x) => x, lbl = (x) => x) => list.map((x) => `<option value="${esc(val(x))}" ${val(x) === sel ? "selected" : ""}>${esc(lbl(x))}</option>`).join("");
+  const dlgRows = (s.dialogue || []).map((d, i) => `<div class="row-2" data-dlg="${i}">
+      <div class="field"><label>Speaker</label><select class="d-spk">${opts(d.speaker, S.characters, (c) => c.character_id, (c) => c.name)}</select></div>
+      <div class="field"><label>Line (${esc(S.ep.language || "")})</label><input class="d-line" value="${esc(d.line || "")}"/></div></div>`).join("");
+  const body = `
+    <div class="field"><label>Heading (location - time)</label><input id="s-head" value="${esc(s.heading || "")}"/></div>
+    <div class="field"><label>Action — the cinematic shot (blocking, expressions, props, lighting)</label><textarea id="s-act" rows="4">${esc(s.action || "")}</textarea></div>
+    <div class="row-3"><div class="field"><label>Camera</label><input id="s-cam" value="${esc(s.camera || "")}"/></div>
+      <div class="field"><label>Shot type</label><select id="s-shot">${opts(s.shot_type, shots, (x) => x, shotLabel)}</select></div>
+      <div class="field"><label>Duration (s)</label><input type="number" step="0.5" id="s-dur" value="${s.duration_s || 5}"/></div></div>
+    <div class="field"><label>Narration / VO (optional)</label><textarea id="s-narr" rows="2">${esc(s.narration || "")}</textarea></div>
+    <div class="field"><label>Dialogue</label><div id="s-dlg">${dlgRows || `<span class="muted">No dialogue in this scene.</span>`}</div></div>`;
+  openModal(`Edit scene ${seq + 1}`, body, async () => {
+    const scenes = (S.ep.scenes || []).map((x) => ({ ...x }));
+    const ns = scenes[seq];
+    ns.heading = $("#s-head").value; ns.action = $("#s-act").value; ns.camera = $("#s-cam").value;
+    ns.shot_type = $("#s-shot").value; ns.duration_s = +$("#s-dur").value; ns.narration = $("#s-narr").value;
+    ns.dialogue = [...document.querySelectorAll("#s-dlg [data-dlg]")].map((r, i) => ({
+      speaker: r.querySelector(".d-spk").value, line: r.querySelector(".d-line").value.trim(),
+      delivery: ((s.dialogue || [])[i] || {}).delivery || "",
+    })).filter((d) => d.line);
+    S.ep = await jpatch(`/api/episodes/${S.ep.episode_id}/artifact`, { scenes });
+    render(); toast("Scene updated");
+  }, "Save scene");
 }
 const shotLabel = (t) => ({ broll: "b-roll", still_kenburns: "ken burns", lipsync_still: "lip-sync", hero_video: "hero video" }[t] || t);
 
@@ -465,7 +497,7 @@ async function epAct(fn, optimisticGen) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll]");
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene]");
   // close dropdown on outside click
   if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
   if (!t) return;
@@ -488,6 +520,8 @@ document.addEventListener("click", async (ev) => {
   if (d.runrefs !== undefined) { const sn = $("#style-note") ? $("#style-note").value.trim() : ""; return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/run`, { style_note: sn }), true); }
   if (d.refsbatch !== undefined) { const sn = $("#style-note") ? $("#style-note").value.trim() : ""; const n = S.ep.scene_count - 1, cost = (n * S.ep.image_unit_cost).toFixed(2); if (!confirm(`Generate ${n} more images (~$${cost})?`)) return; return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/refs/batch`, { style_note: sn }), true); }
   if (d.reroll !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/scene/${d.reroll}/reroll`, {}), true);
+  if (d.reopen !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/reopen`, { stage: d.reopen }));
+  if (d.editscene !== undefined) return modalScene(Number(d.editscene));
 });
 
 async function newEpisode() {
