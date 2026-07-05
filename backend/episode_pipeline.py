@@ -421,11 +421,15 @@ def generate_scenes(store, ep: Episode) -> Episode:
     spent, failed = 0.0, 0
     for scene in ep.scenes:
         if scene.get("shot_type") == "hero_video":
-            info, cost = _gen_scene_clip(scene, cast_map, spec, out_dir)
-            scene["clip"] = info
-            spent += cost
-            failed += (info["status"] != "ok")
-            ep.spent_usd = round(ep.spent_usd + cost, 4)
+            cl = scene.get("clip") or {}
+            if cl.get("status") == "ok" and Path(cl.get("path", "")).is_file():
+                pass                               # already generated — never re-charge on retry
+            else:
+                info, cost = _gen_scene_clip(scene, cast_map, spec, out_dir)
+                scene["clip"] = info
+                spent += cost
+                failed += (info["status"] != "ok")
+                ep.spent_usd = round(ep.spent_usd + cost, 4)
         else:
             scene["clip"] = {"status": "kenburns"}   # marks it "done" (free) for the live grid
         eps.update(ep)
@@ -450,6 +454,9 @@ def generate_audio(store, ep: Episode) -> Episode:
     out_dir = _out_dir(ep)
     spent = 0.0
     for scene in ep.scenes:
+        au = scene.get("audio") or {}
+        if au.get("status") == "ok" and (not au.get("voice") or Path(au.get("voice", "")).is_file()):
+            continue                               # already voiced — don't re-charge on retry
         vpath, vcost = _scene_voice(scene, cast_map, ch, out_dir)
         spent += vcost
         if scene.get("shot_type") == "lipsync_still" and vpath:
@@ -465,7 +472,7 @@ def generate_audio(store, ep: Episode) -> Episode:
             scene["audio"] = {"voice": vpath, "status": "ok"}
         ep.spent_usd = round(ep.spent_usd + vcost, 4)
         eps.update(ep)
-    ok, err, mcost = _assemble_audio_cut(ep, ch, regen_music=True)
+    ok, err, mcost = _assemble_audio_cut(ep, ch, regen_music=False)   # reuse music on retry
     ep.spent_usd = round(ep.spent_usd + mcost, 4)
     if not ok:
         return _fail(eps, ep, f"audio assembly failed: {err}")

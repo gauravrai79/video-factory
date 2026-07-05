@@ -29,9 +29,11 @@ from .spec import OutputSpec, get_spec
 # --------------------------------------------------------------------------- binary resolution
 
 def _resolve(bin_name: str, env_var: str) -> str:
-    """Find ffmpeg/ffprobe across PATH, env override, and the winget install dir."""
-    override = os.environ.get(env_var)
-    if override:
+    """Find ffmpeg/ffprobe across PATH, env override, and the winget install dir.
+    The override is only trusted if it actually points at a file — a blank/garbage env value
+    (e.g. an inline .env comment mis-parsed by dotenv) must not shadow auto-detection."""
+    override = (os.environ.get(env_var) or "").strip()
+    if override and Path(override).is_file():
         return override
     found = shutil.which(bin_name)
     if found:

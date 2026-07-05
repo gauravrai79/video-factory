@@ -57,8 +57,8 @@ const charById = (id) => S.characters.find((c) => c.character_id === id);
 /* ---------------- router ---------------- */
 function parseHash() {
   const h = location.hash.replace(/^#\/?/, "");
-  const [a, b, c, d] = h.split("/");
-  if (a === "c" && b) return { cid: b, view: c || "overview", id: d };
+  const [a, b, c, d, e] = h.split("/");
+  if (a === "c" && b) return { cid: b, view: c || "overview", id: d, stage: e };
   return { view: "home" };
 }
 const go = (h) => { location.hash = h; };
@@ -240,35 +240,46 @@ const STAGES = [["idea", "Idea"], ["script", "Script"], ["refs", "Refs"], ["scen
 function viewWorkspace() {
   const e = S.ep; if (!e) return `<p class="muted">Episode not found.</p>`;
   const idx = STAGES.findIndex(([k]) => k === e.stage);
+  const viewed = (parseHash().stage && STAGES.some(([k]) => k === parseHash().stage)) ? parseHash().stage : e.stage;
+  const readOnly = viewed !== e.stage;
   const steps = STAGES.map(([k, label], i) => {
-    const cls = i < idx || (e.stage === "done") ? "done" : (i === idx ? "current" : "");
-    const num = (i < idx) ? icon("check", "icon") : (i + 1);
-    return `<div class="step ${cls}"><span class="num">${num}</span>${label}</div>`;
+    const reached = i <= idx || e.stage === "done";
+    const cls = (i < idx || e.stage === "done") ? "done" : (i === idx ? "current" : "");
+    const viewing = k === viewed ? "viewing" : "";
+    const num = (i < idx || e.stage === "done") ? icon("check", "icon") : (i + 1);
+    const attr = reached ? `data-nav="c/${S.channelId}/ep/${e.episode_id}/${k}"` : "disabled";
+    return `<button class="step ${cls} ${viewing}" ${attr} style="${reached ? "" : "opacity:.45;cursor:default"}"><span class="num">${num}</span>${label}</button>`;
   }).join(`<span class="step-sep">${icon("arrow", "icon")}</span>`);
+  const banner = readOnly ? `<div class="chip" style="margin-bottom:14px">${icon("check","icon")} Viewing an approved stage (read-only) · <button class="linkish" data-nav="c/${S.channelId}/ep/${e.episode_id}/${e.stage}">back to current</button></div>` : "";
   return `<a class="ws-back" data-nav="c/${S.channelId}/episodes">${icon("back")} Episodes</a>
     <div class="ws-head" style="margin-top:12px"><h1>${esc(e.title)}</h1>
       <div class="ws-meta"><span>${e.cast.length} cast</span><span>${e.scene_count} scenes</span><span>writer ${esc(e.writer_model || "—")}</span><span>spent ${fmt$(e.spent_usd)}</span></div></div>
     <div class="stepper">${steps}</div>
-    <div class="stage-body" id="stagebody">${renderStage(e)}</div>`;
+    ${banner}
+    <div class="stage-body" id="stagebody">${renderStage(e, viewed, readOnly)}</div>`;
 }
 
-function renderStage(e) {
-  if (e.stage_error) var errBar = `<div class="err-banner">${icon("x", "icon")} ${esc(e.stage_error)}</div>`; else errBar = "";
-  const gen = e.generating;
-  switch (e.stage) {
-    case "idea": return errBar + stageIdea(e, gen);
-    case "script": return errBar + stageScript(e, gen);
-    case "refs": return errBar + stageRefs(e, gen);
-    case "scenes": return errBar + stageScenes(e, gen);
-    case "audio": return errBar + stageAudio(e, gen);
-    case "assembly": return errBar + stageAssembly(e, gen);
+function renderStage(e, stage, readOnly) {
+  stage = stage || e.stage;
+  const errBar = (!readOnly && e.stage_error) ? `<div class="err-banner">${icon("x", "icon")} ${esc(e.stage_error)}</div>` : "";
+  const gen = !readOnly && e.generating;
+  switch (stage) {
+    case "idea": return errBar + stageIdea(e, gen, readOnly);
+    case "script": return errBar + stageScript(e, gen, readOnly);
+    case "refs": return errBar + stageRefs(e, gen, readOnly);
+    case "scenes": return errBar + stageScenes(e, gen, readOnly);
+    case "audio": return errBar + stageAudio(e, gen, readOnly);
+    case "assembly": return errBar + stageAssembly(e, gen, readOnly);
     case "done": return stageDone(e);
     default: return "";
   }
 }
 
 /* --- Idea --- */
-function stageIdea(e, gen) {
+function stageIdea(e, gen, ro) {
+  if (ro) return e.idea && e.idea.title
+    ? `<div class="idea" style="max-width:560px"><div class="top"><b>${esc(e.idea.title)}</b></div><div class="log">${esc(e.idea.logline || "")}</div>${e.idea.hook ? `<div class="hook"><span>hook</span>${esc(e.idea.hook)}</div>` : ""}${(e.idea.beats || []).length ? `<ul>${e.idea.beats.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}</div>`
+    : `<p class="muted">No idea recorded.</p>`;
   const brief = `<div class="field" style="max-width:640px"><label>Idea brief (optional — steer the concepts)</label>
     <textarea id="idea-brief" rows="2" placeholder="e.g. a rainy-night stakeout; introduce a cat burglar">${esc(e.idea_brief || "")}</textarea></div>`;
   if (e.stage_status === "awaiting_review" && e.idea_candidates.length) {
@@ -288,8 +299,9 @@ function ideaCard(x, i) {
 }
 
 /* --- Script --- */
-function stageScript(e, gen) {
-  const chosen = e.idea && e.idea.title ? `<div class="stage-intro">📌 <b>${esc(e.idea.title)}</b> — ${esc(e.idea.logline || "")}</div>`.replace("📌 ", "") : "";
+function stageScript(e, gen, ro) {
+  if (ro) return e.scenes.length ? `<div class="script">${e.scenes.map(sceneRow).join("")}</div>` : `<p class="muted">No script recorded.</p>`;
+  const chosen = e.idea && e.idea.title ? `<div class="stage-intro"><b>${esc(e.idea.title)}</b> — ${esc(e.idea.logline || "")}</div>` : "";
   if (e.stage_status === "awaiting_review" && e.scenes.length) {
     return `${chosen}<div class="section-title" style="margin-top:0">Script — ${e.scenes.length} scenes</div>
       <div class="script">${e.scenes.map(sceneRow).join("")}</div>
@@ -307,17 +319,21 @@ function sceneRow(s) {
 const shotLabel = (t) => ({ broll: "b-roll", still_kenburns: "ken burns", lipsync_still: "lip-sync", hero_video: "hero video" }[t] || t);
 
 /* --- Refs (preview + live batch grid) --- */
-function stageRefs(e, gen) {
+function stageRefs(e, gen, ro) {
+  if (ro) return `<div class="grid tiles">${e.scenes.map((s) => refTile(e, s, false, true)).join("")}</div>`;
   const unit = Number(e.image_unit_cost || 0);
   const styleBox = `<div class="field" style="max-width:640px"><label>Style note (optional — applied to every image)</label>
     <textarea id="style-note" rows="2" placeholder="e.g. warmer lighting; more exaggerated cartoon proportions">${esc(e.style_note || "")}</textarea></div>`;
-  // batch running or done → live grid
-  if (gen || e.refs_batch_done) {
+  const partial = !gen && !e.refs_batch_done && e.refs_done_count > 1;   // batch crashed midway
+  // batch running / done / partially done → live grid
+  if (gen || e.refs_batch_done || partial) {
     const done = e.refs_done_count, total = e.scene_count;
     const progress = gen ? progBar(done, total, "Generating reference images", e.spent_usd) : "";
     const grid = `<div class="grid tiles">${e.scenes.map((s) => refTile(e, s, gen)).join("")}</div>`;
-    const bar = (!gen && e.refs_batch_done) ? actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve references</button>`, `<button class="btn btn-ghost" data-runrefs>${icon("refresh")} Start over</button>`]) : "";
-    return `${progress}${grid}${bar}`;
+    let bar = "";
+    if (!gen && e.refs_batch_done) bar = actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve references</button>`, `<button class="btn btn-ghost" data-runrefs>${icon("refresh")} Start over</button>`]);
+    else if (partial) bar = actionBar([`<button class="btn btn-primary" data-refsbatch>${icon("refresh")} Resume — generate the rest</button>`]);
+    return `${progress}<div class="section-title" style="margin-top:0">Reference images (${done}/${total})</div>${grid}${bar}`;
   }
   // preview ready → approve look / tweak
   if (e.stage_status === "awaiting_review") {
@@ -334,7 +350,7 @@ function stageRefs(e, gen) {
   return `<p class="stage-intro">Generate ONE preview to approve the look (character identity + channel art style), then batch the rest at ~${fmt$(unit)}/image via Gemini.</p>
     ${styleBox}<div style="margin-top:14px"><button class="btn btn-primary" data-runrefs ${gen ? "disabled" : ""}>${gen ? spin() : icon("image")} ${gen ? "Generating…" : "Generate preview"}</button></div>`;
 }
-function refTile(e, s, gen) {
+function refTile(e, s, gen, ro) {
   const ri = s.reference_image || {};
   const ok = ri.status === "ok" && s.still_url;
   let state = "queued", inner = `<div class="spin-lg"></div>`;
@@ -343,23 +359,27 @@ function refTile(e, s, gen) {
   else if (gen) { state = "working"; }
   return `<div class="tile ${state}"><div class="thumb">${inner}</div>
     <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
-      ${ok && !gen ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+      ${ok && !gen && !ro ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
 }
 
 /* --- Scenes (live grid) --- */
-function stageScenes(e, gen) {
+function stageScenes(e, gen, ro) {
+  if (ro) return `${e.rough_cut_url ? `<video class="player" controls preload="metadata" src="${e.rough_cut_url}?t=${e.updated_at}"></video>` : ""}<div class="grid tiles">${e.scenes.map((s) => sceneTile(e, s, false, true)).join("")}</div>`;
   const hero = e.scenes.filter((s) => s.shot_type === "hero_video").length;
-  if (gen || e.stage_status === "awaiting_review") {
+  const anyClips = e.scenes.some((s) => (s.clip || {}).status);   // assets already generated
+  if (gen || e.stage_status === "awaiting_review" || anyClips) {
     const progress = gen ? progBar(e.scenes_done_count, e.scene_count, "Rendering scenes", e.spent_usd) : "";
     const player = (!gen && e.rough_cut_url) ? `<video class="player" controls preload="metadata" src="${e.rough_cut_url}?t=${e.updated_at}"></video>` : "";
     const grid = `<div class="grid tiles">${e.scenes.map((s) => sceneTile(e, s, gen)).join("")}</div>`;
-    const bar = (!gen && e.rough_cut_url) ? actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve cut</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Re-render</button>`]) : "";
-    return `${progress}${player}<div class="section-title" style="margin-top:0">Shots</div>${grid}${bar}`;
+    let bar = "";
+    if (!gen && e.rough_cut_url) bar = actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve cut</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Re-render</button>`]);
+    else if (!gen && anyClips) bar = actionBar([`<button class="btn btn-primary" data-run>${icon("refresh")} Finish render (assemble)</button>`]);  // idempotent — won't re-charge for existing clips
+    return `${progress}${player}<div class="section-title" style="margin-top:0">Shots (${e.scenes_done_count}/${e.scene_count})</div>${grid}${bar}`;
   }
   return `<p class="stage-intro">Render the motion: <b>${hero}</b> hero video shot(s); the rest use free Ken Burns on their stills, then stitch a silent rough cut. ~${fmt$(e.stage_estimate_usd)}.</p>
     <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("film")} ${gen ? "Rendering…" : `Render scenes (~${fmt$(e.stage_estimate_usd)})`}</button>`;
 }
-function sceneTile(e, s, gen) {
+function sceneTile(e, s, gen, ro) {
   const clip = s.clip || {}; const done = clip.status === "ok" || clip.status === "kenburns";
   let state = gen ? "working" : "queued", inner = `<div class="spin-lg"></div>`;
   if (s.still_url) inner = `<img src="${s.still_url}?t=${e.updated_at}"/>`;
@@ -367,32 +387,37 @@ function sceneTile(e, s, gen) {
   const clipTag = s.clip_url ? `<span class="clip-tag">${icon("play","icon")} clip</span>` : "";
   return `<div class="tile ${state}"><div class="thumb">${inner}${clipTag}${(gen && !done) ? `<div class="spin-lg" style="position:absolute"></div>` : ""}</div>
     <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
-      ${done && !gen ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+      ${done && !gen && !ro ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
 }
 
 /* --- Audio --- */
-function stageAudio(e, gen) {
-  if (gen || e.stage_status === "awaiting_review") {
+function stageAudio(e, gen, ro) {
+  if (ro) return `${e.audio_cut_url ? `<video class="player" controls preload="metadata" src="${e.audio_cut_url}?t=${e.updated_at}"></video>` : ""}<div class="grid tiles">${e.scenes.map((s) => audioTile(e, s, false, true)).join("")}</div>`;
+  const anyAudio = e.scenes.some((s) => (s.audio || {}).status === "ok");
+  if (gen || e.stage_status === "awaiting_review" || (anyAudio && !e.audio_cut_url)) {
     const progress = gen ? progBar(e.audio_done_count, e.scene_count, "Generating voices + music", e.spent_usd) : "";
     const player = (!gen && e.audio_cut_url) ? `<video class="player" controls preload="metadata" src="${e.audio_cut_url}?t=${e.updated_at}"></video>` : "";
     const grid = `<div class="grid tiles">${e.scenes.map((s) => audioTile(e, s, gen)).join("")}</div>`;
-    const bar = (!gen && e.audio_cut_url) ? actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve audio</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Regenerate</button>`]) : "";
-    return `${progress}${player}<div class="section-title" style="margin-top:0">Voiced cut · 🔊 review with sound</div>${grid}${bar}`.replace("🔊 ", "");
+    let bar = "";
+    if (!gen && e.audio_cut_url) bar = actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve audio</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Regenerate</button>`]);
+    else if (!gen && anyAudio) bar = actionBar([`<button class="btn btn-primary" data-run>${icon("refresh")} Finish audio (mix)</button>`]);
+    return `${progress}${player}<div class="section-title" style="margin-top:0">Voiced cut · review with sound</div>${grid}${bar}`;
   }
   return `<p class="stage-intro">Narrator VO + each character's locked voice + a music bed; lip-sync on talking shots, then a voiced cut. ~${fmt$(e.stage_estimate_usd)}.</p>
     <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("mic")} ${gen ? "Working…" : `Generate voices + music (~${fmt$(e.stage_estimate_usd)})`}</button>`;
 }
-function audioTile(e, s, gen) {
+function audioTile(e, s, gen, ro) {
   const done = (s.audio || {}).status === "ok";
   let state = gen ? "working" : (done ? "done" : "queued");
   const inner = s.still_url ? `<img src="${s.still_url}?t=${e.updated_at}"/>` : `<div class="spin-lg"></div>`;
   return `<div class="tile ${state}"><div class="thumb">${inner}${(gen && !done) ? `<div class="spin-lg" style="position:absolute"></div>` : ""}${done ? `<span class="clip-tag">${icon("mic","icon")}</span>` : ""}</div>
     <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
-      ${done && !gen ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+      ${done && !gen && !ro ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
 }
 
 /* --- Assembly / Done --- */
-function stageAssembly(e, gen) {
+function stageAssembly(e, gen, ro) {
+  if (ro) return e.final_url ? `<video class="player" controls preload="metadata" src="${e.final_url}?t=${e.updated_at}"></video>` : `<p class="muted">Not assembled.</p>`;
   if (e.stage_status === "awaiting_review" && e.final_url) {
     return `<video class="player" controls preload="metadata" src="${e.final_url}?t=${e.updated_at}"></video>
       ${actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve &amp; finish</button>`, `<a class="btn btn-ghost" href="${e.final_url}" download>${icon("download")} Download</a>`])}`;
