@@ -228,9 +228,19 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         f"Hook: {idea.get('hook','')}\n\n"
         f"Produce EXACTLY {n} scenes totalling ~{channel.target_duration_s}s. Cast character_ids: {cast_names}.\n"
         + _SHOT_RULES.format(budget=channel.video_budget) +
-        "For each scene give: heading (setting/time), action, camera, cast_present (character_ids), "
-        "dialogue (list of {speaker: character_id, line, delivery}), narration (VO text, may be empty), "
-        "shot_type, duration_s.\n"
+        "Write each scene like a film SHOT, not a summary. The `action` field MUST be a vivid, "
+        "self-contained cinematic description a video model can render directly — for THIS beat: the "
+        "environment detail, where each character is and what they are physically doing (blocking), "
+        "their expression and body language, key props, and the lighting/mood. Do NOT re-describe a "
+        "character's fixed appearance (it is locked separately) — describe what they DO, where they "
+        "are, and how they feel. Make `camera` specific: shot size + angle + movement "
+        "(e.g. 'low-angle medium two-shot, slow push-in').\n"
+        "Density target for `action` (adapt per beat): 'At a neon-lit chai stall in light rain, Zruv "
+        "crouches low with a worried frown while Jango sits alert at ground level beside him, both "
+        "washed in warm neon; steam curls from a kettle; wet reflections shimmer on the wet pavement.'\n"
+        "For each scene give: heading (location - time of day), action (the rich shot above), camera, "
+        "cast_present (character_ids on screen), dialogue (list of {speaker, line, delivery}), narration "
+        "(VO text, may be empty), shot_type, duration_s.\n"
         f"Every `line` and `narration` value MUST be written in {getattr(channel, 'language', 'English')}.\n"
         "Respond with ONLY JSON, no prose:\n"
         '{"scenes": [{"heading": "...", "action": "...", "camera": "...", "cast_present": ["id"], '
@@ -238,7 +248,7 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         '"shot_type": "lipsync_still", "duration_s": 6}]}'
     )
     try:
-        text, usage = _chat(system, user, model, temperature=0.8, max_tokens=6000)
+        text, usage = _chat(system, user, model, temperature=0.8, max_tokens=10000)
         data = _parse_json(text)
         scenes = data.get("scenes") or []
         if not isinstance(scenes, list) or not scenes:

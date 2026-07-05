@@ -90,20 +90,22 @@ class Character:
         return bool(self.reference_images)
 
     def look_descriptor(self) -> str:
-        """One compact line describing the character's look — injected into every shot prompt so a
-        text-only generation (or an LLM refine) keeps the persona without manual prompting."""
-        pr = self.persona
+        """One compact line describing the character's LOOK — injected into every shot prompt so the
+        model renders the right character (reinforcing, not replacing, the reference images). Prefers
+        an explicit appearance/dna_prompt over a bare name so shots aren't under-specified."""
+        pr = self.persona or {}
+        who = self.name + (f" (a {self.species})" if self.species and self.species != "person" else "")
+        appearance = (pr.get("appearance") or self.dna_prompt or "").strip()
         bits = [
-            self.name,
+            who,
             f"{self.age}" if self.age else "",
-            self.species if self.species != "person" else "",
-            pr.get("appearance", ""),
+            appearance,
             pr.get("facial_features", ""),
             pr.get("body_type", ""),
             pr.get("hair", ""),
         ]
         line = ", ".join(b for b in bits if b)
-        return line or self.dna_prompt or self.name
+        return line or who
 
 
 class CharacterStore:
