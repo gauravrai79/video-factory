@@ -392,9 +392,10 @@ function refTile(e, s, gen, ro) {
   if (ok) { state = "done"; inner = `<img src="${s.still_url}?t=${e.updated_at}"/>`; }
   else if (ri.status === "failed") { state = "fail"; inner = `<div class="fail">${icon("x","icon")} failed</div>`; }
   else if (gen) { state = "working"; }
+  const canReroll = (ok || ri.status === "failed") && !gen && !ro;
   return `<div class="tile ${state}"><div class="thumb">${inner}</div>
     <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
-      ${ok && !gen && !ro ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+      ${canReroll ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
 }
 
 /* --- Scenes (live grid) --- */

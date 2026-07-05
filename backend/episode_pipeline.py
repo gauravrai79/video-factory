@@ -108,11 +108,23 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
         prompt = f"{prompt} {style_note}"
     safety = max([c.safety_tolerance for c in present], default=5)
     path = str(out_dir / "stills" / f"{scene['seq']:03d}.png")
+    model = pricing.default_image_model()
     res = _image_gen(prompt=prompt, output_path=path, reference_image_urls=refs or None,
-                     model=pricing.default_image_model(), safety=safety)
+                     model=model, safety=safety)
+    cost = res.cost_usd
+    # Self-heal a content-filter refusal: retry ONCE with safety-softened wording so one graphic
+    # beat doesn't block the whole batch (this was a real failure mode — a violent crash shot).
+    if not res.success and "refus" in (res.error or "").lower():
+        soft = (prompt + " Keep it non-graphic, comedic and cartoon-safe: no injury, blood, gore, "
+                "or realistic harm; stylised slapstick only.")
+        res = _image_gen(prompt=soft, output_path=path, reference_image_urls=refs or None,
+                         model=model, safety=safety)
+        cost += res.cost_usd
+        if res.success:
+            prompt = soft
     info = {"path": path if res.success else "", "status": "ok" if res.success else "failed",
             "prompt": prompt, "error": res.error}
-    return info, res.cost_usd
+    return info, cost
 
 
 def _gen_scene_clip(scene: dict, cast_map: dict[str, Character], ch: Channel, spec: OutputSpec,
