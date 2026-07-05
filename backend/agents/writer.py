@@ -202,16 +202,19 @@ def ideate(channel, cast_chars: list, *, recent_titles: list[str] | None = None,
 
 _SHOT_RULES = (
     "Assign every scene a shot_type. If a CHARACTER is on screen the shot MUST have real motion — "
-    "never a static still:\n"
-    "  - \"lipsync_still\": a character TALKING on camera — use for EVERY scene with dialogue. The "
-    "frame is animated into a moving, lip-synced talking performance (it is NOT a static still).\n"
-    "  - \"hero_video\": a character doing a physical ACTION / dynamic movement with little or no "
-    "dialogue — full generative motion. Reserve to at most {budget} per episode (most expensive).\n"
+    "never a static still. Give the episode a healthy MIX of dynamic action and talking:\n"
+    "  - \"hero_video\": a character in DYNAMIC ACTION or physical movement — running, chasing, "
+    "fighting, a big physical gag, a dramatic reveal or camera move. Full generative motion. USE THIS "
+    "for the episode's action/spectacle beats EVEN IF the character also shouts a short line. Aim to "
+    "use it {budget} times per episode — don't make the whole episode talking heads.\n"
+    "  - \"lipsync_still\": a character mainly TALKING (a conversation, reaction, or exposition line) "
+    "— animated into a moving, lip-synced talking performance. Use when DIALOGUE carries the beat.\n"
     "  - \"broll\": establishing / atmosphere / insert with NO character on screen — a cheap still "
     "pan. Use ONLY when no character is present.\n"
     "  - \"still_kenburns\": a held object/detail insert with NO character — cheap still pan.\n"
-    "HARD RULE: if cast_present is non-empty, shot_type MUST be hero_video or lipsync_still — never "
-    "broll or still_kenburns. Stills are for character-free shots only.\n"
+    "For a character scene: choose hero_video when MOTION/action carries it, lipsync_still when "
+    "DIALOGUE carries it. HARD RULE: cast_present non-empty -> hero_video or lipsync_still, never a "
+    "still. Stills are for character-free shots only.\n"
     "At most ONE speaking character per scene (cut between characters across scenes) — never two "
     "people talking in the same shot.\n"
 )
@@ -293,10 +296,12 @@ def _normalize_scenes(scenes: list[dict], channel) -> list[dict]:
         st = s.get("shot_type") if s.get("shot_type") in valid else "still_kenburns"
         cast = s.get("cast_present") or []
         has_dialogue = bool(_single_speaker(s.get("dialogue") or []))
-        # Character on screen -> MUST move: talking -> lip-synced animation, else -> hero video.
-        # No character -> keep it a cheap still (never spend on video for pure b-roll).
+        # Character on screen -> MUST move (never a still). Keep the writer's choice between
+        # hero_video (full dynamic action motion) and lipsync_still (lip-synced talking); only
+        # coerce a bad still up to one of them. No character -> cheap still (never pay for video).
         if cast:
-            st = "lipsync_still" if has_dialogue else "hero_video"
+            if st not in ("hero_video", "lipsync_still"):
+                st = "hero_video" if not has_dialogue else "lipsync_still"
         elif st in ("hero_video", "lipsync_still"):
             st = "broll"
         if st == "hero_video":
