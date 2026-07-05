@@ -132,12 +132,28 @@ def _gen_scene_clip(scene: dict, cast_map: dict[str, Character], ch: Channel, sp
     return info, res.cost_usd
 
 
+def _sarvam_on() -> bool:
+    """True only when a real (non-comment, non-blank) SARVAM_API_KEY is present."""
+    from .capabilities import sarvam_voice
+    return sarvam_voice._key() is not None
+
+
 def _voice_opts(char: Character | None) -> tuple[str, str, str | None]:
-    """(model, voice_id, clone_audio) for a character's Voice DNA."""
+    """(model, voice_id, clone_audio) for a character's Voice DNA. Prefers Sarvam (authentic
+    Indian voices) when the character opts in AND SARVAM_API_KEY is set; else ElevenLabs."""
     v = (char.voice if char else {}) or {}
     provider = v.get("provider", "elevenlabs")
+    if provider == "sarvam" and _sarvam_on():
+        return "sarvam-bulbul", (v.get("sarvam_speaker") or "abhilash"), None
     model = v.get("model") or ("chatterbox" if provider == "chatterbox" else pricing.DEFAULT_TTS_MODEL)
     return model, (v.get("voice_id") or "Rachel"), v.get("clone_audio")
+
+
+def _narrator_opts(ch: Channel) -> tuple[str, str]:
+    """(model, voice) for channel narration — Sarvam for a Hindi channel when the key is set."""
+    if (getattr(ch, "language", "") or "").lower() == "hindi" and _sarvam_on():
+        return "sarvam-bulbul", "hitesh"
+    return pricing.DEFAULT_TTS_MODEL, (ch.narrator_voice_id or "Rachel")
 
 
 def _concat_audio(paths: list[str], out_path: str) -> bool:
@@ -163,7 +179,8 @@ def _scene_voice(scene: dict, cast_map: dict[str, Character], ch: Channel, out_d
     narr = (scene.get("narration") or "").strip()
     if narr:
         p = str(adir / f"{seq:03d}_narr.mp3")
-        r = voice_cap.speak(text=narr, output_path=p, voice_id=(ch.narrator_voice_id or "Rachel"),
+        n_model, n_voice = _narrator_opts(ch)
+        r = voice_cap.speak(text=narr, output_path=p, voice_id=n_voice, model=n_model,
                             execute=execute)
         if r.ok:
             parts.append(p); cost += r.cost_usd

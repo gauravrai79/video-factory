@@ -63,6 +63,9 @@ def speak(*, text: str, output_path: str, voice_id: str = "Rachel",
     text = (text or "").strip()
     if not text:
         return VoiceResult(ok=False, model=model, error="empty text")
+    if model == "sarvam-bulbul":                        # authentic Indian-language voices
+        from . import sarvam_voice
+        return sarvam_voice.speak(text=text, output_path=output_path, speaker=voice_id, execute=execute)
     est = pricing.tts_cost(model, len(text))
     if _simulated_failure(model):
         return VoiceResult(ok=False, model=model, error="simulated failure")

@@ -177,10 +177,11 @@ def ken_burns_clip(image_path: str | Path, out_path: str | Path, *, duration_s: 
     fps = spec.fps
     frames = max(int(round(duration_s * fps)), 1)
     ow, oh = spec.width * 2, spec.height * 2          # oversample to keep the zoom smooth
+    # Subtle, slow drift (max ~1.12x) reads as gentle motion, not a hard slideshow zoom.
     if zoom == "out":
-        zexpr = "if(eq(on,0),1.18,max(zoom-0.0012,1.0))"
+        zexpr = "if(eq(on,0),1.12,max(zoom-0.0009,1.0))"
     else:
-        zexpr = "min(zoom+0.0012,1.18)"
+        zexpr = "min(zoom+0.0009,1.12)"
     vf = (
         f"scale={ow}:{oh}:force_original_aspect_ratio=increase,crop={ow}:{oh},"
         f"zoompan=z='{zexpr}':d={frames}:fps={fps}:"
@@ -320,7 +321,7 @@ def assemble_scored(
     *,
     spec: OutputSpec | None = None,
     music_path: str | Path | None = None,
-    music_gain: float = 0.16,
+    music_gain: float = 0.10,          # bed sits well under the voice (was 0.16 — too loud over VO)
     pad_color: str = "black",
 ) -> FinishResult:
     """Assemble shots with per-scene audio into one voiced+scored cut. Each scene becomes a

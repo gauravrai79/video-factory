@@ -208,6 +208,8 @@ _SHOT_RULES = (
     "most dialogue (cheap).\n"
     "  - \"hero_video\": a character physically ACTING/MOVING; reserve these — at most {budget} per "
     "episode (expensive).\n"
+    "At most ONE speaking character per scene (cut between characters across scenes) — never two "
+    "people talking in the same shot.\n"
 )
 
 
@@ -248,8 +250,26 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         return WriterResult(ok=False, model=model, error=f"{type(e).__name__}: {str(e)[:200]}")
 
 
+def _single_speaker(dialogue: list) -> list:
+    """Keep only the first speaker's lines in a scene. Multi-speaker lip-sync in one shot is
+    unreliable, so each shot features at most one talking character (cut between characters
+    across shots), which keeps every talking-still/hero clip clean to sync."""
+    if not isinstance(dialogue, list) or not dialogue:
+        return dialogue or []
+    first, kept = None, []
+    for d in dialogue:
+        if not isinstance(d, dict):
+            continue
+        if first is None:
+            first = d.get("speaker")
+        if d.get("speaker") == first:
+            kept.append(d)
+    return kept
+
+
 def _normalize_scenes(scenes: list[dict], channel) -> list[dict]:
-    """Clamp shot types + enforce the video budget (excess hero_video -> lipsync_still)."""
+    """Clamp shot types + enforce the video budget (excess hero_video -> lipsync_still) and one
+    speaker per shot."""
     valid = {"broll", "still_kenburns", "lipsync_still", "hero_video"}
     videos = 0
     out = []
@@ -266,7 +286,7 @@ def _normalize_scenes(scenes: list[dict], channel) -> list[dict]:
             "action": s.get("action", ""),
             "camera": s.get("camera", ""),
             "cast_present": s.get("cast_present") or [],
-            "dialogue": s.get("dialogue") or [],
+            "dialogue": _single_speaker(s.get("dialogue") or []),
             "narration": s.get("narration", ""),
             "shot_type": st,
             "duration_s": float(s.get("duration_s", 5) or 5),
