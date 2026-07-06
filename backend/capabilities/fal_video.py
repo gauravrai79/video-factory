@@ -133,6 +133,65 @@ def video_billed_cost(model: str, duration_s: float) -> float:
     return pricing.video_cost(model, int(_snap_duration(duration_s)))
 
 
+# --------------------------------------------------------------------------- Veo 3.1 Lite (native audio)
+VEO_LITE_ENDPOINT = "fal-ai/veo3.1/lite/image-to-video"
+VEO_BASE = "https://queue.fal.run"
+# ($/sec) keyed by (resolution, audio_on). 720p+audio is the default; audio is included in-clip.
+_VEO_LITE_RATE = {("720p", True): 0.05, ("720p", False): 0.03,
+                  ("1080p", True): 0.08, ("1080p", False): 0.05}
+
+
+def _veo_duration(duration_s: float) -> str:
+    """Veo accepts only 4s/6s/8s clips — snap to the nearest."""
+    return min(("4s", "6s", "8s"), key=lambda d: abs(int(d[:-1]) - float(duration_s)))
+
+
+def veo_lite_billed_cost(duration_s: float, resolution: str = "720p", audio: bool = True) -> float:
+    """Real Veo 3.1 Lite cost on the snapped (4/6/8s) duration, so estimates match fal billing."""
+    secs = int(_veo_duration(duration_s)[:-1])
+    return round(secs * _VEO_LITE_RATE.get((resolution, audio), 0.05), 4)
+
+
+def generate_native_video(
+    *,
+    prompt: str,
+    image_url: str,
+    output_path: str,
+    duration_s: float = 6.0,
+    resolution: str = "720p",
+    generate_audio: bool = True,
+    aspect_ratio: str = "16:9",
+    execute: bool = True,
+) -> GenResult:
+    """Veo 3.1 Lite image-to-video WITH native audio (dialogue + lip-sync + SFX generated in one pass).
+    image_url is the shot's reference still (locks the character); the spoken line goes IN the prompt.
+    Returns a clip that already contains its audio — no separate TTS/lip-sync needed."""
+    dur = _veo_duration(duration_s)
+    est = veo_lite_billed_cost(duration_s, resolution, generate_audio)
+    if _simulated_failure("veo3.1-lite"):
+        return GenResult(success=False, provider="fal-veo", model=VEO_LITE_ENDPOINT,
+                         error=_simulated_failure("veo3.1-lite"))
+    if not execute or not _fal_key():
+        from ..finishing import stub_video
+        stub_video(output_path, duration_s=int(dur[:-1]))     # placeholder clip (+silent audio) for $0 tests
+        return GenResult(success=True, provider="fal-veo", model=VEO_LITE_ENDPOINT,
+                         output_path=output_path, cost_usd=est, raw={"dry_run": True})
+    payload: dict[str, Any] = {
+        "prompt": prompt, "image_url": image_url, "duration": dur,
+        "resolution": resolution, "generate_audio": generate_audio, "aspect_ratio": aspect_ratio,
+    }
+    start = time.time()
+    try:
+        data, request_id = _poll_fal(VEO_LITE_ENDPOINT, payload, base=VEO_BASE)
+        _download(data["video"]["url"], Path(output_path))
+    except (requests.RequestException, GenerationError, KeyError) as e:
+        return GenResult(success=False, provider="fal-veo", model=VEO_LITE_ENDPOINT,
+                         error=f"veo generation failed: {e}")
+    return GenResult(success=True, provider="fal-veo", model=VEO_LITE_ENDPOINT, output_path=output_path,
+                     cost_usd=est, request_id=request_id,
+                     duration_seconds=round(time.time() - start, 2), raw=data)
+
+
 def generate_video(
     *,
     prompt: str,

@@ -49,3 +49,37 @@ def motion_prompt(scene: dict, present: list[Character], channel: Channel | None
     return (f"{who}. {scene.get('action', '')}. Camera: {scene.get('camera', '')}.{world_line} "
             f"Natural, subtle motion; keep identity, face, and wardrobe consistent; "
             f"smooth realistic movement, no morphing or warping.")
+
+
+def veo_prompt(scene: dict, present: list[Character], channel: Channel) -> str:
+    """Prompt for Veo native-audio image-to-video: describes the shot AND embeds the spoken line so
+    Veo generates the video + voice + lip-sync in ONE pass. The reference still (passed separately as
+    image_url) locks the character look; this prompt drives motion, style, setting, and dialogue."""
+    style = channel.art_style or "cinematic"
+    world = (getattr(channel, "world", "") or "").strip()
+    lang = (getattr(channel, "language", "") or "English").strip()
+    id2name = {c.character_id: c.name for c in present}
+    parts = [f"Art style: {style}"]
+    if world:
+        parts.append(f"Setting — {world}")
+    if present:
+        who = "; ".join(c.look_descriptor() for c in present)
+        parts.append(f"Featuring {who}. Keep each character's exact look, wardrobe and identity from the image")
+    if scene.get("action"):
+        parts.append(scene["action"])
+    if scene.get("camera"):
+        parts.append(f"Camera: {scene['camera']}")
+    dlg = next((d for d in (scene.get("dialogue") or [])
+                if isinstance(d, dict) and (d.get("line") or "").strip()), None)
+    narr = (scene.get("narration") or "").strip()
+    if dlg:
+        nm = id2name.get(dlg.get("speaker"), "The character")
+        delivery = (dlg.get("delivery") or "").strip()
+        dtag = f", {delivery}" if delivery else ""
+        parts.append(f'{nm} speaks this line out loud in {lang}{dtag}, mouth clearly lip-synced: '
+                     f'"{dlg["line"].strip()}"')
+    elif narr:
+        parts.append(f'A warm narrator voiceover says in {lang}: "{narr}"')
+    parts.append("Natural motion, expressions and gestures; accurate lip-sync to the spoken line; "
+                 "no on-screen text, captions, subtitles, logos or watermarks")
+    return ". ".join(p for p in parts if p)

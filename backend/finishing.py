@@ -109,6 +109,21 @@ def stub_image(output_path: str | Path, *, width: int = 1280, height: int = 720,
     return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
 
 
+def stub_video(output_path: str | Path, *, duration_s: float = 6.0, width: int = 1280,
+               height: int = 720, color: str = "gray") -> bool:
+    """Write a placeholder MP4 (solid color + silent audio track) of the given length. Used by the
+    no-key native-video (Veo) stub so refs->scenes->assembly run end-to-end at $0, and the clip
+    carries an audio track like the real native-audio output."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    dur = max(1.0, float(duration_s))
+    cmd = [FFMPEG, "-y", "-f", "lavfi", "-i", f"color=c={color}:s={width}x{height}:r=24",
+           "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", f"{dur}",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+           "-shortest", str(out)]
+    return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+
+
 def _summary(path: str | Path) -> dict:
     data = probe(path)
     fmt = data.get("format", {})
