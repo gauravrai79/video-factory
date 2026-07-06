@@ -395,7 +395,28 @@ function refTile(e, s, gen, ro) {
   const canReroll = (ok || ri.status === "failed") && !gen && !ro;
   return `<div class="tile ${state}"><div class="thumb">${inner}</div>
     <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
+      ${canReroll ? `<button class="reroll-link" data-refedit="${s.seq}">${icon("edit","icon")} edit</button>` : ""}
       ${canReroll ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+}
+function modalRefEdit(seq) {
+  const s = (S.ep.scenes || [])[seq]; if (!s) return;
+  const ri = s.reference_image || {};
+  const models = S.ep.image_models || [];
+  const cur = ri.model || (models[0] && models[0].id) || "";
+  const img = s.still_url
+    ? `<img src="${s.still_url}?t=${Date.now()}" style="width:100%;border-radius:10px;border:1px solid var(--border)"/>`
+    : `<div class="err-banner">Image failed — edit the prompt/model and regenerate.</div>`;
+  const body = `${img}
+    <div class="field" style="margin-top:12px"><label>Image prompt — edit to change what's drawn</label>
+      <textarea id="ref-prompt" rows="6">${esc(ri.prompt || "")}</textarea></div>
+    <div class="field"><label>Image model</label>
+      <select id="ref-model">${models.map((m) => `<option value="${m.id}" ${m.id === cur ? "selected" : ""}>${esc(m.label)} — ${fmt$(m.cost)}</option>`).join("")}</select></div>`;
+  openModal(`Scene ${seq + 1} — reference image`, body, async () => {
+    $("#m-msg").className = "hint"; $("#m-msg").textContent = "Regenerating (~15s)…";
+    S.ep = await jpost(`/api/episodes/${S.ep.episode_id}/scene/${seq}/reroll`,
+                       { prompt: $("#ref-prompt").value.trim(), model: $("#ref-model").value });
+    render(); toast("Reference regenerated");
+  }, "Regenerate");
 }
 
 /* --- Scenes (live grid) --- */
@@ -501,7 +522,7 @@ async function epAct(fn, optimisticGen) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref]");
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit]");
   // close dropdown on outside click
   if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
   if (!t) return;
@@ -540,6 +561,7 @@ document.addEventListener("click", async (ev) => {
   if (d.reroll !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/scene/${d.reroll}/reroll`, {}), true);
   if (d.reopen !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/reopen`, { stage: d.reopen }));
   if (d.editscene !== undefined) return modalScene(Number(d.editscene));
+  if (d.refedit !== undefined) return modalRefEdit(Number(d.refedit));
 });
 
 async function newEpisode() {

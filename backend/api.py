@@ -347,6 +347,13 @@ def _episode_view(ep, channel_name: str = "") -> dict[str, Any]:
     d["scene_count"] = len(ep.scenes)
     d["stage_estimate_usd"] = episode_pipeline.stage_estimate(ep)
     d["image_unit_cost"] = round(pricing.image_cost(), 4)
+    d["image_models"] = [{"id": m, "label": l, "cost": round(pricing.image_cost(m), 4)} for m, l in (
+        ("gemini-flash", "Gemini Flash (cheap, consistent)"),
+        ("nano-banana-pro", "Nano Banana Pro (best identity)"),
+        ("nano-banana-2", "Nano Banana 2"),
+        ("gemini-3-flash", "Gemini 3 Flash"),
+        ("flux-kontext", "Flux Kontext (edit)"),
+    )]
     d["refs_done_count"] = sum(1 for s in ep.scenes if (s.get("reference_image") or {}).get("status") == "ok")
     d["scenes_done_count"] = sum(1 for s in ep.scenes if (s.get("clip") or {}).get("status") in ("ok", "kenburns"))
     d["audio_done_count"] = sum(1 for s in ep.scenes if (s.get("audio") or {}).get("status") == "ok")
@@ -491,9 +498,10 @@ def reopen_stage(episode_id: str, body: dict[str, Any] | None = None) -> dict[st
 
 @app.post("/api/episodes/{episode_id}/scene/{seq}/reroll")
 def reroll_scene(episode_id: str, seq: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Re-generate one scene's asset for the current stage (still at refs, hero clip at scenes)."""
+    """Re-generate one scene's asset for the current stage (still at refs, Veo clip at scenes).
+    Optional {prompt, model} override the wording / image model when re-rolling a reference."""
     return _episode_action(episode_id, lambda s, e: episode_pipeline.reroll_scene(
-        s, e, seq=seq, prompt_override=(body or {}).get("prompt")))
+        s, e, seq=seq, prompt_override=(body or {}).get("prompt"), model=(body or {}).get("model")))
 
 
 def _episode_media(episode_id: str, kind: str, seq: int | None = None):

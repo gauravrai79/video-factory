@@ -96,7 +96,7 @@ def _image_gen(*, prompt: str, output_path: str, reference_image_urls, model: st
 
 def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
                      out_dir: Path, *, prompt_override: str | None = None,
-                     style_note: str = "") -> tuple[dict, float]:
+                     style_note: str = "", model: str | None = None) -> tuple[dict, float]:
     present = shot_prompt.scene_cast(scene, cast_map)
     prompt, refs = shot_prompt.reference_still_prompt(scene, present, ch)
     if prompt_override:
@@ -105,7 +105,7 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
         prompt = f"{prompt} {style_note}"
     safety = max([c.safety_tolerance for c in present], default=5)
     path = str(out_dir / "stills" / f"{scene['seq']:03d}.png")
-    model = pricing.default_image_model()
+    model = model or pricing.default_image_model()
     res = _image_gen(prompt=prompt, output_path=path, reference_image_urls=refs or None,
                      model=model, safety=safety)
     cost = res.cost_usd
@@ -120,7 +120,7 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
         if res.success:
             prompt = soft
     info = {"path": path if res.success else "", "status": "ok" if res.success else "failed",
-            "prompt": prompt, "error": res.error}
+            "prompt": prompt, "model": model, "error": res.error}
     return info, cost
 
 
@@ -408,8 +408,11 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
     return eps.update(ep)
 
 
-def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = None) -> Episode:
-    """Regenerate one scene's asset for the current stage (per-asset re-roll at the gate)."""
+def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = None,
+                 model: str | None = None) -> Episode:
+    """Regenerate one scene's asset for the current stage (per-asset re-roll at the gate). At the
+    refs stage an optional prompt/model override lets you tweak the wording or try a different image
+    model for a shot you don't like."""
     eps, chs, cs, ch, cast = _ctx(store, ep)
     scene = next((s for s in ep.scenes if s.get("seq") == seq), None)
     if not scene:
@@ -418,7 +421,7 @@ def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = 
     out_dir = _out_dir(ep)
     if ep.stage == Stage.REFS.value:
         info, cost = _gen_scene_still(scene, cast_map, ch, out_dir, prompt_override=prompt_override,
-                                      style_note=ep.style_note)
+                                      style_note=ep.style_note, model=model)
         scene["reference_image"] = info
         ep.spent_usd = round(ep.spent_usd + cost, 4)
         ep.log("ref_reroll", {"seq": seq, "status": info["status"], "cost_usd": cost})
