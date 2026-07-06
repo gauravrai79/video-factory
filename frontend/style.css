@@ -256,6 +256,13 @@ svg { display: block; }
 .kv { display: grid; grid-template-columns: 130px 1fr; gap: 8px 14px; font-size: 13px; }
 .kv .k { color: var(--muted); }
 
+.scene-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 14px; }
+.scene-controls .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.tile .thumb[data-scenegen] { cursor: pointer; }
+.tile-check { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,.55); border-radius: 6px;
+  padding: 3px; display: grid; place-items: center; cursor: pointer; z-index: 2; }
+.tile-check input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); pointer-events: none; }
+
 .step[data-nav] { cursor: pointer; }
 .step[data-nav]:hover { background: var(--panel3); }
 .step.viewing { box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: 8px; }

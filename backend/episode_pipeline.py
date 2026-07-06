@@ -161,12 +161,14 @@ def _gen_scene_veo(scene: dict, cast_map: dict[str, Character], ch: Channel,
     if res_ not in ("720p", "1080p"):
         res_ = "720p"
     path = str(out_dir / "clips" / f"{scene['seq']:03d}.mp4")
+    prompt = (scene.get("veo_prompt_override") or "").strip() or shot_prompt.veo_prompt(scene, present, ch)
     res = fal_video.generate_native_video(
-        prompt=shot_prompt.veo_prompt(scene, present, ch), image_url=image_ref(still),
+        prompt=prompt, image_url=image_ref(still),
         output_path=path, duration_s=scene.get("duration_s", 6), resolution=res_,
         generate_audio=speech, aspect_ratio=("9:16" if ch.is_short() else "16:9"), execute=True)
     info = {"path": path if res.success else "", "status": "ok" if res.success else "failed",
-            "error": res.error, "has_audio": bool(speech and res.success), "cost": res.cost_usd}
+            "prompt": prompt, "error": res.error, "has_audio": bool(speech and res.success),
+            "cost": res.cost_usd}
     if res.success:
         scene["duration_s"] = round(media_duration(path) or scene.get("duration_s", 6), 2)
     return info, res.cost_usd
@@ -474,23 +476,30 @@ def generate_refs_batch(store, ep: Episode, *, style_note: str | None = None) ->
     return eps.update(ep)
 
 
-def generate_scenes(store, ep: Episode) -> Episode:
-    """Render EVERY scene as a Veo 3.1 Lite clip — motion + native audio (voice + lip-sync) in one
-    pass — and stitch a voiced rough cut. Persists per clip so a live poll sees them appear one by
-    one. Idempotent: an already-generated clip is never re-charged on retry."""
+def generate_scenes(store, ep: Episode, *, seqs: list[int] | None = None) -> Episode:
+    """Render scenes as Veo 3.1 Lite clips (motion + native audio) and stitch the voiced rough cut.
+    seqs=None -> generate every scene still missing a clip (idempotent, no re-charge). seqs=[...] ->
+    (re)generate exactly those scenes (the per-scene / selected-batch path, forced even if a clip
+    already exists, since the user picked them). Persists per clip for the live grid."""
     eps, chs, cs, ch, cast = _ctx(store, ep)
     if not ep.scenes or not all((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
         return _fail(eps, ep, "generate + approve reference images first")
-    est = stage_estimate(ep)
+    want = set(seqs) if seqs is not None else None
+    est = stage_estimate(ep) if want is None else round(sum(
+        fal_video.veo_lite_billed_cost(s.get("duration_s", 6),
+            os.environ.get("VF_VIDEO_RESOLUTION", "720p") if os.environ.get("VF_VIDEO_RESOLUTION") in ("720p", "1080p") else "720p",
+            audio=_scene_has_speech(s)) for s in ep.scenes if s.get("seq") in want), 4)
     if est > episode_ceiling_usd():
         return _fail(eps, ep, f"est ${est} over episode ceiling ${episode_ceiling_usd()}")
     cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
     out_dir = _out_dir(ep)
     spent, failed = 0.0, 0
     for scene in ep.scenes:
+        if want is not None and scene.get("seq") not in want:
+            continue                               # selected-only run: leave other scenes untouched
         cl = scene.get("clip") or {}
-        if cl.get("status") == "ok" and Path(cl.get("path", "")).is_file():
-            continue                               # already generated — never re-charge on retry
+        if want is None and cl.get("status") == "ok" and Path(cl.get("path", "")).is_file():
+            continue                               # bulk run: skip already-done (idempotent, no re-charge)
         info, cost = _gen_scene_veo(scene, cast_map, ch, out_dir)
         scene["clip"] = info
         spent += cost

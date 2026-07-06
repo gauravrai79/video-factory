@@ -551,6 +551,52 @@ def reroll_scene(episode_id: str, seq: int, body: dict[str, Any] | None = None) 
         s, e, seq=seq, prompt_override=(body or {}).get("prompt"), model=(body or {}).get("model")))
 
 
+@app.get("/api/episodes/{episode_id}/scene/{seq}/veo-prompt")
+def scene_veo_prompt(episode_id: str, seq: int) -> dict[str, Any]:
+    """The editable Veo prompt for a scene: a saved override / the prompt last used, else the default
+    computed from the scene (action, dialogue, style, world)."""
+    store = JobStore()
+    ep = EpisodeStore(store).get(episode_id)
+    if not ep:
+        raise HTTPException(404, "episode not found")
+    scene = next((s for s in ep.scenes if s.get("seq") == seq), None)
+    if not scene:
+        raise HTTPException(404, "scene not found")
+    prompt = (scene.get("veo_prompt_override") or (scene.get("clip") or {}).get("prompt") or "").strip()
+    if not prompt:
+        from .agents import shot_prompt
+        ch = ChannelStore(store).get(ep.channel_id)
+        cast_map = episode_pipeline._cast_map(CharacterStore(store), ep.cast or ch.cast_ids())
+        prompt = shot_prompt.veo_prompt(scene, shot_prompt.scene_cast(scene, cast_map), ch)
+    return {"seq": seq, "prompt": prompt}
+
+
+@app.post("/api/episodes/{episode_id}/scenes/generate")
+def generate_scenes_selected(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Generate scenes with per-scene control. Body {seqs?: [int], prompts?: {seq: text}}. seqs omitted
+    -> generate every scene still missing a clip; seqs=[...] -> (re)generate exactly those. Any prompts
+    are saved as per-scene Veo overrides first. Runs in the background so the grid fills in live."""
+    body = body or {}
+    store = JobStore()
+    ep_store = EpisodeStore(store)
+    ep = ep_store.get(episode_id)
+    if not ep:
+        raise HTTPException(404, "episode not found")
+    if ep.stage != "scenes":
+        raise HTTPException(409, "not at the scenes stage")
+    prompts = body.get("prompts") or {}
+    if prompts:
+        for s in ep.scenes:
+            val = (prompts.get(str(s.get("seq"))) or "").strip()
+            if val:
+                s["veo_prompt_override"] = val
+        ep_store.update(ep)
+    seqs = body.get("seqs")
+    kwargs = {"seqs": [int(x) for x in seqs]} if seqs else {}
+    episode_jobs.start(episode_id, "generate_scenes", **kwargs)
+    return _ep_view(episode_id)
+
+
 def _episode_media(episode_id: str, kind: str, seq: int | None = None):
     store = JobStore()
     ep = EpisodeStore(store).get(episode_id)

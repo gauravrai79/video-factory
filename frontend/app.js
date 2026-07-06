@@ -374,7 +374,8 @@ const shotLabel = (t) => ({ broll: "b-roll", still_kenburns: "ken burns", lipsyn
 
 /* --- Refs (preview + live batch grid) --- */
 function stageRefs(e, gen, ro) {
-  if (ro) return `<div class="grid tiles">${e.scenes.map((s) => refTile(e, s, false, true)).join("")}</div>`;
+  if (ro) return `<div class="grid tiles">${e.scenes.map((s) => refTile(e, s, false, true)).join("")}</div>
+    ${actionBar([`<button class="btn btn-primary" data-reopen="refs">${icon("edit")} Edit / re-roll references</button>`])}`;
   const unit = Number(e.image_unit_cost || 0);
   const styleBox = `<div class="field" style="max-width:640px"><label>Style note (optional — applied to every image)</label>
     <textarea id="style-note" rows="2" placeholder="e.g. warmer lighting; more exaggerated cartoon proportions">${esc(e.style_note || "")}</textarea></div>`;
@@ -438,32 +439,55 @@ function modalRefEdit(seq) {
   }, "Regenerate");
 }
 
-/* --- Scenes (live grid) --- */
+/* --- Scenes (per-scene control grid) --- */
+const SCENE_UNIT = 0.30;   // ~6s Veo clip @720p + audio
 function stageScenes(e, gen, ro) {
   if (ro) return `${e.rough_cut_url ? `<video class="player" controls preload="metadata" src="${e.rough_cut_url}?t=${e.updated_at}"></video>` : ""}<div class="grid tiles">${e.scenes.map((s) => sceneTile(e, s, false, true)).join("")}</div>`;
-  const hero = e.scenes.filter((s) => s.shot_type === "hero_video").length;
-  const anyClips = e.scenes.some((s) => (s.clip || {}).status);   // assets already generated
-  if (gen || e.stage_status === "awaiting_review" || anyClips) {
-    const progress = gen ? progBar(e.scenes_done_count, e.scene_count, "Rendering scenes", e.spent_usd) : "";
-    const player = (!gen && e.rough_cut_url) ? `<video class="player" controls preload="metadata" src="${e.rough_cut_url}?t=${e.updated_at}"></video>` : "";
-    const grid = `<div class="grid tiles">${e.scenes.map((s) => sceneTile(e, s, gen)).join("")}</div>`;
-    let bar = "";
-    if (!gen && e.rough_cut_url) bar = actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve cut</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Re-render</button>`]);
-    else if (!gen && anyClips) bar = actionBar([`<button class="btn btn-primary" data-run>${icon("refresh")} Finish render (assemble)</button>`]);  // idempotent — won't re-charge for existing clips
-    return `${progress}${player}<div class="section-title" style="margin-top:0">Shots (${e.scenes_done_count}/${e.scene_count})</div>${grid}${bar}`;
-  }
-  return `<p class="stage-intro">Render the motion: <b>${hero}</b> hero video shot(s); the rest use free Ken Burns on their stills, then stitch a silent rough cut. ~${fmt$(e.stage_estimate_usd)}.</p>
-    <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("film")} ${gen ? "Rendering…" : `Render scenes (~${fmt$(e.stage_estimate_usd)})`}</button>`;
+  S.sceneSel = S.sceneSel || new Set();
+  const done = e.scenes_done_count, total = e.scene_count;
+  const progress = gen ? progBar(done, total, "Rendering scenes", e.spent_usd) : "";
+  const player = (!gen && e.rough_cut_url) ? `<video class="player" controls preload="metadata" src="${e.rough_cut_url}?t=${e.updated_at}"></video>` : "";
+  const grid = `<div class="grid tiles">${e.scenes.map((s) => sceneTile(e, s, gen)).join("")}</div>`;
+  const sel = [...S.sceneSel].filter((n) => e.scenes.some((s) => s.seq === n));
+  const remaining = e.scenes.filter((s) => (s.clip || {}).status !== "ok");
+  const allDone = total > 0 && done >= total;
+  const controls = gen ? `<p class="stage-intro">${spin()} Generating — fills in live; you can leave and come back.</p>` : `<div class="scene-controls">
+      <label class="chk"><input type="checkbox" data-selall ${sel.length === total && total ? "checked" : ""}/> Select all</label>
+      <button class="btn btn-primary" data-genselected ${sel.length ? "" : "disabled"}>${icon("film")} Generate selected (${sel.length}) · ~$${(sel.length * SCENE_UNIT).toFixed(2)}</button>
+      ${remaining.length ? `<button class="btn btn-ghost" data-genremaining>${icon("film")} Generate ${remaining.length} remaining · ~$${(remaining.length * SCENE_UNIT).toFixed(2)}</button>` : ""}
+      ${allDone ? `<button class="btn btn-primary" data-approve>${icon("check")} Approve cut</button>` : ""}</div>`;
+  return `${progress}${player}
+    <div class="section-title" style="margin-top:0">Scenes (${done}/${total}) <small class="muted">· click a shot to edit its prompt &amp; generate, or tick multiple and generate together</small></div>
+    ${controls}${grid}`;
 }
 function sceneTile(e, s, gen, ro) {
-  const clip = s.clip || {}; const done = clip.status === "ok" || clip.status === "kenburns";
-  let state = gen ? "working" : "queued", inner = `<div class="spin-lg"></div>`;
-  if (s.still_url) inner = `<img src="${s.still_url}?t=${e.updated_at}"/>`;
-  if (done) state = "done";
+  const clip = s.clip || {}; const okClip = clip.status === "ok"; const failed = clip.status === "failed";
+  const sel = (S.sceneSel || new Set()).has(s.seq);
+  const working = gen && !okClip;
+  const inner = s.still_url ? `<img src="${s.still_url}?t=${e.updated_at}"/>` : `<div class="spin-lg"></div>`;
   const clipTag = s.clip_url ? `<span class="clip-tag">${icon("play","icon")} clip</span>` : "";
-  return `<div class="tile ${state}"><div class="thumb">${inner}${clipTag}${(gen && !done) ? `<div class="spin-lg" style="position:absolute"></div>` : ""}</div>
+  const overlay = working ? `<div class="spin-lg" style="position:absolute"></div>` : (failed ? `<div class="fail">${icon("x","icon")} failed</div>` : "");
+  const check = (!ro && !gen) ? `<label class="tile-check" data-selscene="${s.seq}"><input type="checkbox" ${sel ? "checked" : ""} tabindex="-1"/></label>` : "";
+  const open = (!ro && !gen) ? `data-scenegen="${s.seq}"` : "";
+  return `<div class="tile ${okClip ? "done" : (working ? "working" : (failed ? "fail" : ""))}">
+    <div class="thumb" ${open}>${inner}${clipTag}${overlay}${check}</div>
     <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
-      ${done && !gen && !ro ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+      ${(!ro && !gen) ? `<button class="reroll-link" data-scenegen="${s.seq}">${icon("edit","icon")} prompt</button>` : ""}</div></div>`;
+}
+async function modalSceneGen(seq) {
+  const s = (S.ep.scenes || [])[seq]; if (!s) return;
+  let prompt = "";
+  try { prompt = (await jget(`/api/episodes/${S.ep.episode_id}/scene/${seq}/veo-prompt`)).prompt || ""; } catch (err) {}
+  const media = s.clip_url ? `<video src="${s.clip_url}?t=${S.ep.updated_at}" controls style="width:100%;border-radius:10px"></video>`
+    : (s.still_url ? `<img src="${s.still_url}?t=${S.ep.updated_at}" style="width:100%;border-radius:10px;border:1px solid var(--border)"/>` : "");
+  const body = `${media}
+    <div class="field" style="margin-top:12px"><label>Veo prompt — describe the shot; any dialogue in "quotes" is spoken (native audio + lip-sync)</label>
+      <textarea id="veo-prompt" rows="8">${esc(prompt)}</textarea></div>`;
+  openModal(`Scene ${seq + 1} — generate`, body, async () => {
+    S.ep = await jpost(`/api/episodes/${S.ep.episode_id}/scenes/generate`,
+                       { seqs: [seq], prompts: { [seq]: $("#veo-prompt").value.trim() } });
+    render(); managePolling(); toast("Generating scene…");
+  }, "Generate this scene (~$0.30)");
 }
 
 /* --- Audio --- */
@@ -541,7 +565,7 @@ async function epAct(fn, optimisticGen) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans]");
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans],[data-scenegen],[data-selscene],[data-selall],[data-genselected],[data-genremaining]");
   // close dropdown on outside click
   if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
   if (!t) return;
@@ -581,6 +605,20 @@ document.addEventListener("click", async (ev) => {
   if (d.reopen !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/reopen`, { stage: d.reopen }));
   if (d.editscene !== undefined) return modalScene(Number(d.editscene));
   if (d.refedit !== undefined) return modalRefEdit(Number(d.refedit));
+  if (d.scenegen !== undefined) return modalSceneGen(Number(d.scenegen));
+  if (d.selscene !== undefined) { const n = Number(d.selscene); S.sceneSel = S.sceneSel || new Set(); S.sceneSel.has(n) ? S.sceneSel.delete(n) : S.sceneSel.add(n); return render(); }
+  if (d.selall !== undefined) { const all = (S.ep.scenes || []).map((s) => s.seq); S.sceneSel = (S.sceneSel && S.sceneSel.size === all.length) ? new Set() : new Set(all); return render(); }
+  if (d.genselected !== undefined) {
+    const seqs = [...(S.sceneSel || [])]; if (!seqs.length) return;
+    if (!confirm(`Generate ${seqs.length} scene(s) (~$${(seqs.length * SCENE_UNIT).toFixed(2)})?`)) return;
+    return epAct(async () => { const r = await jpost(`/api/episodes/${S.ep.episode_id}/scenes/generate`, { seqs }); S.sceneSel = new Set(); return r; }, true);
+  }
+  if (d.genremaining !== undefined) {
+    const rem = (S.ep.scenes || []).filter((s) => (s.clip || {}).status !== "ok").map((s) => s.seq);
+    if (!rem.length) return;
+    if (!confirm(`Generate ${rem.length} remaining scene(s) (~$${(rem.length * SCENE_UNIT).toFixed(2)})?`)) return;
+    return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/scenes/generate`, { seqs: rem }), true);
+  }
   if (d.gentrans) {
     if (!confirm(`Generate a "${d.gentrans}" transition (~$0.20, ~1 min)?`)) return;
     S.genTransition = d.gentrans; render();
