@@ -46,6 +46,8 @@ class Channel:
     writer_provider: str = "anthropic"          # anthropic | gemini | openai
     writer_model: str = ""                      # blank -> provider default
     series_memory: dict[str, Any] = field(default_factory=dict)   # {bible, recaps: [..]}
+    transitions: list[dict[str, Any]] = field(default_factory=list)  # reusable ~2s transition clips
+    #   each: {id, kind, label, path, prompt, created_at}
     posting_cadence: str = ""
     active: bool = True
     created_at: float = 0.0

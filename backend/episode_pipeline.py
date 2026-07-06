@@ -268,9 +268,12 @@ def _assemble_scenes_cut(ep: Episode, ch: Channel, *, music_path: str | None = N
     """Concatenate the Veo clips into a cut that KEEPS their native audio (voice + SFX), optionally
     mixing a music bed under it. Used for the silent-of-music rough cut (scenes stage) and the
     music-scored cut (audio stage)."""
-    shots = [_shot_for_scene(s) for s in ep.scenes if (s.get("clip") or {}).get("status") == "ok"]
+    kept = [s for s in ep.scenes if (s.get("clip") or {}).get("status") == "ok"]
+    shots = [_shot_for_scene(s) for s in kept]
     if not shots:
         return False, "no scene clips to assemble"
+    from . import transitions
+    shots = transitions.interleave(shots, kept, ch)     # splice library transitions at location cuts
     out = str(_out_dir(ep) / out_name)
     fr = assemble_scored(shots, out, spec=channel_spec(ch), music_path=music_path)
     if fr.success:

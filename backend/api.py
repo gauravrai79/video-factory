@@ -280,6 +280,11 @@ def _channel_view(ch, cs: CharacterStore) -> dict[str, Any]:
                        "has_reference": c.has_reference() if c else False,
                        "has_voice": c.has_voice() if c else False})
     d["roster"] = roster
+    d["transitions"] = [{**t, "video_url": f"/api/channels/{ch.channel_id}/transitions/{t.get('id')}/media"}
+                        for t in (ch.transitions or [])]
+    from .transitions import TEMPLATES
+    d["transition_templates"] = [{"kind": k, "label": v["label"], "tags": v["tags"]}
+                                 for k, v in TEMPLATES.items()]
     return d
 
 
@@ -335,6 +340,48 @@ def update_channel(channel_id: str, body: dict[str, Any]) -> dict[str, Any]:
     if not ch:
         raise HTTPException(404, "channel not found")
     return _channel_view(ch, cs)
+
+
+# --------------------------------------------------------------------------- transition library
+
+@app.post("/api/channels/{channel_id}/transitions")
+def add_transition(channel_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Generate one reusable transition clip for a channel from a template {kind}."""
+    from . import transitions
+    store = JobStore()
+    ch_store, cs = ChannelStore(store), CharacterStore(store)
+    ch = ch_store.get(channel_id)
+    if not ch:
+        raise HTTPException(404, "channel not found")
+    try:
+        info, _cost = transitions.generate_transition(store, ch, str((body or {}).get("kind", "")))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if info.get("status") != "ok":
+        raise HTTPException(502, f"transition generation failed: {info.get('error')}")
+    return _channel_view(ch_store.get(channel_id), cs)
+
+
+@app.delete("/api/channels/{channel_id}/transitions/{tid}")
+def remove_transition(channel_id: str, tid: str) -> dict[str, Any]:
+    from . import transitions
+    store = JobStore()
+    ch_store, cs = ChannelStore(store), CharacterStore(store)
+    ch = ch_store.get(channel_id)
+    if not ch:
+        raise HTTPException(404, "channel not found")
+    if not transitions.delete_transition(store, ch, tid):
+        raise HTTPException(404, "transition not found")
+    return _channel_view(ch_store.get(channel_id), cs)
+
+
+@app.get("/api/channels/{channel_id}/transitions/{tid}/media")
+def transition_media(channel_id: str, tid: str):
+    ch = ChannelStore().get(channel_id)
+    t = next((x for x in (ch.transitions if ch else []) if x.get("id") == tid), None)
+    if not t or not Path(t.get("path", "")).is_file():
+        raise HTTPException(404, "transition media not found")
+    return FileResponse(t["path"], media_type="video/mp4")
 
 
 # --------------------------------------------------------------------------- episodes

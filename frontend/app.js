@@ -102,6 +102,7 @@ function render() {
         ${railItem("overview", "grid", "Overview")}
         ${railItem("cast", "users", "Cast")}
         ${railItem("episodes", "film", "Episodes")}
+        ${railItem("transitions", "sparkles", "Transitions")}
         <div class="rail-spacer"></div>
         <button class="rail-item" data-newchannel>${icon("plus")}<span>New channel</span></button>
         ${railItem("settings", "settings", "Settings")}
@@ -113,6 +114,7 @@ function render() {
   const page = $("#page");
   if (v === "cast") page.innerHTML = viewCast();
   else if (v === "characters") page.innerHTML = viewCharacter(parseHash().id);
+  else if (v === "transitions") page.innerHTML = viewTransitions();
   else if (v === "episodes") page.innerHTML = viewEpisodes();
   else if (v === "ep") page.innerHTML = viewWorkspace();
   else if (v === "settings") page.innerHTML = viewSettings();
@@ -199,6 +201,23 @@ function viewCharacter(id) {
         <p style="font-size:13px" class="muted">${esc(c.dna_prompt || "not set")}</p>
       </div>
     </div>`;
+}
+
+function viewTransitions() {
+  const ch = channel(); if (!ch) return `<p class="muted">No channel.</p>`;
+  const lib = ch.transitions || [], templates = ch.transition_templates || [];
+  const gen = S.genTransition;
+  const tiles = lib.length ? lib.map((t) => `
+    <div class="tile done"><div class="thumb"><video src="${t.video_url}" muted loop playsinline
+      onmouseover="this.play()" onmouseout="this.pause();this.currentTime=0"></video></div>
+      <div class="row"><small>${esc(t.label || t.kind)}</small>
+        <button class="reroll-link" data-deltrans="${t.id}">${icon("x","icon")} delete</button></div></div>`).join("")
+    : `<p class="muted">No transitions yet — generate a few below. Each is made once (~$0.20) and reused in every episode.</p>`;
+  const genRow = templates.map((tpl) => `<button class="btn btn-ghost btn-sm" data-gentrans="${tpl.kind}" ${gen ? "disabled" : ""}>${gen === tpl.kind ? spin() : icon("plus")} ${esc(tpl.label)}</button>`).join("");
+  return `<div class="page-head"><div><h1>Transitions</h1><div class="sub">Reusable ~2s clips (with whoosh) auto-spliced between scenes at location cuts — made once, reused every episode.</div></div></div>
+    <div class="grid tiles">${tiles}</div>
+    <div class="section-title">Generate a transition <small class="muted">· ~$0.20 each, ~1 min</small></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">${genRow}</div>`;
 }
 
 function viewEpisodes() {
@@ -522,7 +541,7 @@ async function epAct(fn, optimisticGen) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit]");
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans]");
   // close dropdown on outside click
   if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
   if (!t) return;
@@ -562,6 +581,19 @@ document.addEventListener("click", async (ev) => {
   if (d.reopen !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/reopen`, { stage: d.reopen }));
   if (d.editscene !== undefined) return modalScene(Number(d.editscene));
   if (d.refedit !== undefined) return modalRefEdit(Number(d.refedit));
+  if (d.gentrans) {
+    if (!confirm(`Generate a "${d.gentrans}" transition (~$0.20, ~1 min)?`)) return;
+    S.genTransition = d.gentrans; render();
+    try { const c = await jpost(`/api/channels/${S.channelId}/transitions`, { kind: d.gentrans }); S.channels = S.channels.map((x) => x.channel_id === c.channel_id ? c : x); toast("Transition added", "ok"); }
+    catch (err) { toast(err.message, "err"); }
+    S.genTransition = null; render(); return;
+  }
+  if (d.deltrans) {
+    if (!confirm("Delete this transition?")) return;
+    try { const c = await jdel(`/api/channels/${S.channelId}/transitions/${d.deltrans}`); S.channels = S.channels.map((x) => x.channel_id === c.channel_id ? c : x); toast("Deleted"); }
+    catch (err) { toast(err.message, "err"); }
+    render(); return;
+  }
 });
 
 async function newEpisode() {
