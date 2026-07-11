@@ -74,6 +74,10 @@ def unit_checks() -> None:
     same_loc = [dict(s, location_id="same") for s in scenes]
     out2 = tr.interleave(shots, same_loc, _Ch())
     check("no transition inside a continuous location", len(out2) == len(shots))
+    out3 = tr.interleave(shots, same_loc, _Ch(), overrides={"2": "comic_slam", "5": "none"})
+    check("seam override forces a transition", len(out3) == len(shots) + 1)
+    out4 = tr.interleave(shots, scenes, _Ch(), overrides={str(i): "none" for i in range(1, 9)})
+    check("seam override 'none' silences all seams", len(out4) == len(shots))
     shutil.rmtree(tmp, ignore_errors=True)
 
     # script QC: weighted composite + intent attachment
@@ -122,14 +126,16 @@ def main() -> int:
         ep = pl.approve_stage(store, ep)
         check("advanced to scenes", ep.stage == "scenes")
 
-        # --- SCENES (rough cut) ---
+        # --- SCENES (individual clips only — NO stitching here) ---
         ep = pl.generate_scenes(store, ep)
-        rough = (ep.timeline or {}).get("rough_cut")
-        check("rough cut assembled", bool(rough) and Path(rough).is_file())
-        dur = media_duration(rough) if rough else 0
-        want = sum(s.get("duration_s", 5) for s in ep.scenes)
-        check("rough cut not collapsed (xfade)", dur > want * 0.6, f"{dur}s vs ~{want}s scripted")
-        # idempotency: re-run must not re-charge
+        okc = sum(1 for s in ep.scenes if (s.get("clip") or {}).get("status") == "ok")
+        check("all scene clips generated", okc == len(ep.scenes), f"{okc}/{len(ep.scenes)}")
+        check("scenes stage does NOT stitch", not (ep.timeline or {}).get("rough_cut"))
+        # subset regen: only the chosen scene, others untouched
+        p0 = (ep.scenes[0].get("clip") or {}).get("path")
+        ep = pl.generate_scenes(store, ep, seqs=[1])
+        check("subset regen leaves others untouched", (ep.scenes[0].get("clip") or {}).get("path") == p0)
+        # idempotency: full re-run must not re-charge
         spent_before = ep.spent_usd
         ep = pl.generate_scenes(store, ep)
         check("scenes re-run is idempotent ($0 delta)", abs(ep.spent_usd - spent_before) < 1e-6,
@@ -137,17 +143,20 @@ def main() -> int:
         ep = pl.approve_stage(store, ep)
         check("advanced to audio", ep.stage == "audio")
 
-        # --- AUDIO ---
+        # --- AUDIO (optional music bed; skippable) ---
         ep = pl.generate_audio(store, ep)
-        acut = (ep.timeline or {}).get("audio_cut")
-        check("audio cut assembled", bool(acut) and Path(acut).is_file())
-        ep = pl.approve_stage(store, ep)
-        check("advanced to assembly", ep.stage == "assembly")
+        check("music bed generated", bool((ep.timeline or {}).get("music")))
+        ep = pl.approve_stage(store, ep, payload={"skip_music": True})
+        check("audio skippable (clips carry audio)", ep.stage == "assembly"
+              and (ep.timeline or {}).get("music") is None)
 
-        # --- ASSEMBLY ---
+        # --- ASSEMBLY (THE stitch: clips + transitions + loudnorm) ---
         ep = pl.run_stage(store, ep)
         final = (ep.timeline or {}).get("final_video")
         check("final video produced", bool(final) and Path(final).is_file())
+        dur = media_duration(final) if final else 0
+        want = sum(min(s.get("duration_s", 5), s.get("scripted_duration_s") or 99) for s in ep.scenes)
+        check("final cut not collapsed", dur > want * 0.6, f"{dur}s vs ~{want}s")
         ep = pl.approve_stage(store, ep)
         check("advanced to done", ep.stage == "done")
     finally:

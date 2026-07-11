@@ -511,38 +511,51 @@ async function modalSceneGen(seq) {
 
 /* --- Audio --- */
 function stageAudio(e, gen, ro) {
-  if (ro) return `${e.audio_cut_url ? `<video class="player" controls preload="metadata" src="${e.audio_cut_url}?t=${e.updated_at}"></video>` : ""}<div class="grid tiles">${e.scenes.map((s) => audioTile(e, s, false, true)).join("")}</div>`;
-  const anyAudio = e.scenes.some((s) => (s.audio || {}).status === "ok");
-  if (gen || e.stage_status === "awaiting_review" || (anyAudio && !e.audio_cut_url)) {
-    const progress = gen ? progBar(e.audio_done_count, e.scene_count, "Generating voices + music", e.spent_usd) : "";
-    const player = (!gen && e.audio_cut_url) ? `<video class="player" controls preload="metadata" src="${e.audio_cut_url}?t=${e.updated_at}"></video>` : "";
-    const grid = `<div class="grid tiles">${e.scenes.map((s) => audioTile(e, s, gen)).join("")}</div>`;
-    let bar = "";
-    if (!gen && e.audio_cut_url) bar = actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve audio</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Regenerate</button>`]);
-    else if (!gen && anyAudio) bar = actionBar([`<button class="btn btn-primary" data-run>${icon("refresh")} Finish audio (mix)</button>`]);
-    return `${progress}${player}<div class="section-title" style="margin-top:0">Voiced cut · review with sound</div>${grid}${bar}`;
-  }
-  return `<p class="stage-intro">Narrator VO + each character's locked voice + a music bed; lip-sync on talking shots, then a voiced cut. ~${fmt$(e.stage_estimate_usd)}.</p>
-    <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("mic")} ${gen ? "Working…" : `Generate voices + music (~${fmt$(e.stage_estimate_usd)})`}</button>`;
-}
-function audioTile(e, s, gen, ro) {
-  const done = (s.audio || {}).status === "ok";
-  let state = gen ? "working" : (done ? "done" : "queued");
-  const inner = s.still_url ? `<img src="${s.still_url}?t=${e.updated_at}"/>` : `<div class="spin-lg"></div>`;
-  return `<div class="tile ${state}"><div class="thumb">${inner}${(gen && !done) ? `<div class="spin-lg" style="position:absolute"></div>` : ""}${done ? `<span class="clip-tag">${icon("mic","icon")}</span>` : ""}</div>
-    <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
-      ${done && !gen && !ro ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
+  const music = (e.timeline || {}).music;
+  if (ro) return `<p class="muted">${music ? "Music bed generated." : "Music skipped — the clips carry their own audio."}</p>`;
+  const player = music ? `<audio controls src="/api/episodes/${e.episode_id}/music?t=${e.updated_at}" style="width:100%;max-width:620px"></audio>` : "";
+  return `<p class="stage-intro">Your clips already carry native voice + SFX. This stage only adds an optional background <b>music bed</b> (mixed under the dialogue at assembly).</p>
+    ${player}
+    <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+      <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("mic")} ${gen ? "Composing…" : (music ? "Regenerate music" : `Generate music (~${fmt$(e.stage_estimate_usd)})`)}</button>
+      ${music ? `<button class="btn btn-primary" data-approve>${icon("check")} Approve with music</button>` : ""}
+      <button class="btn btn-ghost" data-skipmusic>${icon("arrow")} Skip — audio is in the clips</button>
+    </div>`;
 }
 
 /* --- Assembly / Done --- */
+const TRANSITION_LABELS = { hero_rush: "Hero rush", blaze: "Blaze whoosh", comic_slam: "Comic slam", whip_pan: "Whip pan", dust_puff: "Dust puff", dhoom: "DHOOM burst" };
+function seamEditor(e) {
+  const ch = channel() || {};
+  const kinds = [...new Set((ch.transitions || []).map((t) => t.kind))];
+  if (!kinds.length) return `<p class="muted">No transition library yet — generate some in the Transitions tab, or every seam is a clean hard cut.</p>`;
+  const seams = (e.timeline || {}).seams || {};
+  const opts = (cur) => [`<option value="auto" ${cur === "auto" ? "selected" : ""}>Auto (rules)</option>`,
+    `<option value="none" ${cur === "none" ? "selected" : ""}>None — hard cut</option>`,
+    ...kinds.map((k) => `<option value="${k}" ${cur === k ? "selected" : ""}>${TRANSITION_LABELS[k] || k}</option>`)].join("");
+  const rows = e.scenes.slice(1).map((s, idx) => {
+    const i = idx + 1;                       // incoming shot index
+    const prev = e.scenes[idx];
+    const cur = seams[String(i)] || "auto";
+    return `<div class="seam-row">
+      <span class="seam-scenes"><img src="${prev.still_url || ""}?t=${e.updated_at}"/><span class="seam-arrow">${icon("arrow","icon")}</span><img src="${s.still_url || ""}?t=${e.updated_at}"/></span>
+      <small class="muted">#${prev.seq + 1} → #${s.seq + 1}${(prev.heading || "") !== (s.heading || "") ? " · location change" : ""}</small>
+      <select class="seam-sel" data-seam="${i}">${opts(cur)}</select></div>`;
+  }).join("");
+  return `<details class="seam-box"><summary>Transitions between scenes <small class="muted">· Auto follows the cut-rhythm rules; override any seam</small></summary>
+    <div class="seam-list">${rows}</div>
+    <button class="btn btn-ghost btn-sm" data-saveseams style="margin-top:8px">${icon("check")} Save seam choices</button></details>`;
+}
 function stageAssembly(e, gen, ro) {
   if (ro) return e.final_url ? `<video class="player" controls preload="metadata" src="${e.final_url}?t=${e.updated_at}"></video>` : `<p class="muted">Not assembled.</p>`;
-  if (e.stage_status === "awaiting_review" && e.final_url) {
-    return `<video class="player" controls preload="metadata" src="${e.final_url}?t=${e.updated_at}"></video>
-      ${actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve &amp; finish</button>`, `<a class="btn btn-ghost" href="${e.final_url}" download>${icon("download")} Download</a>`])}`;
-  }
-  return `<p class="stage-intro">Build the final cut + editable timeline (EDL). Free — no generation.</p>
-    <button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("film")} ${gen ? "Assembling…" : "Assemble final"}</button>`;
+  const player = e.final_url ? `<video class="player" controls preload="metadata" src="${e.final_url}?t=${e.updated_at}"></video>` : "";
+  const bar = e.final_url && e.stage_status === "awaiting_review"
+    ? actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve &amp; finish</button>`,
+                 `<button class="btn btn-ghost" data-run>${icon("refresh")} Re-render cut</button>`,
+                 `<a class="btn btn-ghost" href="${e.final_url}" download>${icon("download")} Download</a>`])
+    : `<div style="margin-top:14px"><button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("film")} ${gen ? "Rendering…" : "Render final cut"}</button></div>`;
+  return `<p class="stage-intro">The stitch: clips (native audio) + transitions + ${(e.timeline || {}).music ? "music bed" : "no music"} + loudness normalization → final episode.</p>
+    ${seamEditor(e)}${player}${bar}`;
 }
 function stageDone(e) {
   return `<div class="done-banner">${icon("check")} Episode complete</div>
@@ -584,7 +597,7 @@ async function epAct(fn, optimisticGen) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans],[data-scenegen],[data-selscene],[data-selall],[data-genselected],[data-genremaining]");
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans],[data-scenegen],[data-selscene],[data-selall],[data-genselected],[data-genremaining],[data-skipmusic],[data-saveseams]");
   // close dropdown on outside click
   if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
   if (!t) return;
@@ -631,6 +644,14 @@ document.addEventListener("click", async (ev) => {
     const seqs = [...(S.sceneSel || [])]; if (!seqs.length) return;
     if (!confirm(`Generate ${seqs.length} scene(s) (~$${(seqs.length * SCENE_UNIT).toFixed(2)})?`)) return;
     return epAct(async () => { const r = await jpost(`/api/episodes/${S.ep.episode_id}/scenes/generate`, { seqs }); S.sceneSel = new Set(); return r; }, true);
+  }
+  if (d.skipmusic !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/approve`, { skip_music: true }));
+  if (d.saveseams !== undefined) {
+    const seams = {};
+    document.querySelectorAll(".seam-sel[data-seam]").forEach((sel) => { seams[sel.dataset.seam] = sel.value; });
+    try { S.ep = await jpost(`/api/episodes/${S.ep.episode_id}/seams`, { seams }); toast("Seams saved — render the cut to apply"); render(); }
+    catch (err) { toast(err.message, "err"); }
+    return;
   }
   if (d.genremaining !== undefined) {
     const rem = (S.ep.scenes || []).filter((s) => (s.clip || {}).status !== "ok").map((s) => s.seq);

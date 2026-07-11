@@ -299,21 +299,21 @@ def _shot_for_scene(scene: dict) -> ScoredShot:
 
 
 def _assemble_scenes_cut(ep: Episode, ch: Channel, *, music_path: str | None = None,
-                         out_name: str = "rough_cut.mp4") -> tuple[bool, str]:
-    """Concatenate the Veo clips into a cut that KEEPS their native audio (voice + SFX), optionally
-    mixing a music bed under it. Used for the silent-of-music rough cut (scenes stage) and the
-    music-scored cut (audio stage)."""
+                         out_name: str = "final.mp4", out_key: str = "final_video") -> tuple[bool, str]:
+    """Concatenate the Veo clips (each keeping its native audio) with transitions spliced per the
+    cut-rhythm rules and any human seam overrides, an optional music bed, and loudnorm. This is THE
+    stitch — it happens at ASSEMBLY, not at the scenes stage (scenes stay individual clips)."""
     kept = [s for s in ep.scenes if (s.get("clip") or {}).get("status") == "ok"]
     shots = [_shot_for_scene(s) for s in kept]
     if not shots:
         return False, "no scene clips to assemble"
     from . import transitions
-    shots = transitions.interleave(shots, kept, ch)     # splice library transitions at location cuts
+    overrides = (ep.timeline or {}).get("seams") or {}
+    shots = transitions.interleave(shots, kept, ch, overrides=overrides)
     out = str(_out_dir(ep) / out_name)
     fr = assemble_scored(shots, out, spec=channel_spec(ch), music_path=music_path)
     if fr.success:
-        key = "audio_cut" if music_path else "rough_cut"
-        ep.timeline = {**(ep.timeline or {}), key: out, "silent": False, "probe": fr.probe}
+        ep.timeline = {**(ep.timeline or {}), out_key: out, "silent": False, "probe": fr.probe}
     return fr.success, fr.error or ""
 
 
@@ -459,16 +459,20 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
         return generate_audio(store, ep)
 
     elif stage == Stage.ASSEMBLY:
-        audio_cut = (ep.timeline or {}).get("audio_cut")
-        if not audio_cut or not Path(audio_cut).is_file():
-            return _fail(eps, ep, "run the audio stage first")
-        final = str(_out_dir(ep) / "final.mp4")
-        shutil.copy(audio_cut, final)
+        # THE stitch: clips (native audio) + transitions (auto rules + human seam overrides) +
+        # optional music bed + loudnorm -> final.mp4.
+        music = (ep.timeline or {}).get("music")
+        if music and not Path(music).is_file():
+            music = None
+        ok, err = _assemble_scenes_cut(ep, ch, music_path=music)
+        if not ok:
+            return _fail(eps, ep, f"final assembly failed: {err}")
         edl = [{"seq": s["seq"], "shot_type": s.get("shot_type"), "duration_s": s.get("duration_s"),
                 "heading": s.get("heading")} for s in ep.scenes]
-        ep.timeline = {**(ep.timeline or {}), "final_video": final, "edl": edl}
+        ep.timeline = {**(ep.timeline or {}), "edl": edl}
         ep.stage_status = StageStatus.AWAITING_REVIEW.value
-        ep.log("assembly", {"scenes": len(ep.scenes)})
+        ep.log("assembly", {"scenes": len(ep.scenes), "music": bool(music),
+                            "seam_overrides": len((ep.timeline or {}).get("seams") or {})})
 
     else:
         return _fail(eps, ep, f"stage '{stage.value}' runs in a later milestone")
@@ -493,18 +497,11 @@ def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = 
         scene["reference_image"] = info
         ep.spent_usd = round(ep.spent_usd + cost, 4)
         ep.log("ref_reroll", {"seq": seq, "status": info["status"], "cost_usd": cost})
-    elif ep.stage == Stage.SCENES.value:
+    elif ep.stage in (Stage.SCENES.value, Stage.AUDIO.value, Stage.ASSEMBLY.value):
         info, cost = _gen_scene_veo(scene, cast_map, ch, out_dir)   # fresh Veo clip (voice+motion)
         scene["clip"] = info
         ep.spent_usd = round(ep.spent_usd + cost, 4)
-        _assemble_scenes_cut(ep, ch)                                # rebuild the rough cut
         ep.log("scene_reroll", {"seq": seq, "status": info["status"], "cost_usd": cost})
-    elif ep.stage == Stage.AUDIO.value:
-        info, cost = _gen_scene_veo(scene, cast_map, ch, out_dir)   # re-roll the clip; audio rides in it
-        scene["clip"] = info
-        ep.spent_usd = round(ep.spent_usd + cost, 4)
-        _assemble_scenes_cut(ep, ch, music_path=(ep.timeline or {}).get("music"), out_name="audio_cut.mp4")
-        ep.log("audio_reroll", {"seq": seq, "status": info["status"], "cost_usd": cost})
     else:
         raise StageError(f"nothing to re-roll at stage '{ep.stage}'")
     return eps.update(ep)
@@ -569,9 +566,8 @@ def generate_scenes(store, ep: Episode, *, seqs: list[int] | None = None) -> Epi
         failed += (info["status"] != "ok")
         ep.spent_usd = round(ep.spent_usd + cost, 4)
         eps.update(ep)
-    ok, err = _assemble_scenes_cut(ep, ch)
-    if not ok:
-        return _fail(eps, ep, f"rough-cut assembly failed: {err}")
+    # NO stitching here — scenes stay individual clips you review/re-roll one by one; the stitch
+    # (transitions + music + loudnorm) happens once, at ASSEMBLY.
     ep.stage_status = StageStatus.AWAITING_REVIEW.value
     ep.log("scenes", {"veo_clips": sum(1 for s in ep.scenes if (s.get("clip") or {}).get("status") == "ok"),
                       "failed": failed, "cost_usd": round(spent, 4)})
@@ -579,30 +575,22 @@ def generate_scenes(store, ep: Episode, *, seqs: list[int] | None = None) -> Epi
 
 
 def generate_audio(store, ep: Episode) -> Episode:
-    """The Veo clips already carry native voice + lip-sync, so this stage just lays a MUSIC BED under
-    them and produces the scored cut. No separate TTS / lip-sync anymore."""
+    """The Veo clips already carry native voice + lip-sync — this stage only generates an OPTIONAL
+    music bed (mixed under the clips at assembly). It can be skipped entirely at the approve gate."""
     eps, chs, cs, ch, cast = _ctx(store, ep)
     if not all((s.get("clip") or {}).get("status") == "ok" for s in ep.scenes):
         return _fail(eps, ep, "generate + approve the scenes first")
     out_dir = _out_dir(ep)
     total_dur = round(sum(s.get("duration_s", 6) for s in ep.scenes), 2)
-    music_path = (ep.timeline or {}).get("music")
-    mcost = 0.0
-    if not music_path or not Path(music_path or "").is_file():
-        music_path = str(out_dir / "music.mp3")
-        mr = music_cap.generate(prompt=_music_prompt(ch), output_path=music_path,
-                                duration_s=total_dur, execute=True)
-        mcost = mr.cost_usd
-        if not mr.ok:
-            music_path = None
-    ep.spent_usd = round(ep.spent_usd + mcost, 4)
+    music_path = str(out_dir / "music.mp3")
+    mr = music_cap.generate(prompt=_music_prompt(ch), output_path=music_path,
+                            duration_s=total_dur, execute=True)
+    ep.spent_usd = round(ep.spent_usd + mr.cost_usd, 4)
+    if not mr.ok:
+        return _fail(eps, ep, f"music generation failed: {mr.error}")
     ep.timeline = {**(ep.timeline or {}), "music": music_path}
-    ok, err = _assemble_scenes_cut(ep, ch, music_path=music_path, out_name="audio_cut.mp4")
-    if not ok:
-        return _fail(eps, ep, f"audio assembly failed: {err}")
     ep.stage_status = StageStatus.AWAITING_REVIEW.value
-    ep.log("audio", {"music_cost_usd": round(mcost, 4),
-                     "duration_s": (ep.timeline.get("probe") or {}).get("duration_s")})
+    ep.log("audio", {"music_cost_usd": round(mr.cost_usd, 4), "duration_s": total_dur})
     return eps.update(ep)
 
 
@@ -641,13 +629,18 @@ def approve_stage(store, ep: Episode, *, payload: dict[str, Any] | None = None) 
             raise StageError("some reference images failed — re-roll them before approving")
         ep.log("refs_approved", {"scenes": len(ep.scenes)})
     elif stage == Stage.SCENES:
-        if not (ep.timeline or {}).get("rough_cut"):
-            raise StageError("no rough cut to approve")
-        ep.log("scenes_approved", {})
+        bad = [s["seq"] + 1 for s in ep.scenes if (s.get("clip") or {}).get("status") != "ok"]
+        if bad:
+            raise StageError(f"scenes {bad} have no clip yet — generate or re-roll them first")
+        ep.log("scenes_approved", {"clips": len(ep.scenes)})
     elif stage == Stage.AUDIO:
-        if not (ep.timeline or {}).get("audio_cut"):
-            raise StageError("no audio cut to approve")
-        ep.log("audio_approved", {})
+        if payload.get("skip_music"):
+            ep.timeline = {**(ep.timeline or {}), "music": None}
+            ep.log("audio_skipped", {"reason": "native clip audio only"})
+        elif not (ep.timeline or {}).get("music"):
+            raise StageError("generate a music bed first, or skip (the clips already carry audio)")
+        else:
+            ep.log("audio_approved", {"music": True})
     elif stage == Stage.ASSEMBLY:
         if not (ep.timeline or {}).get("final_video"):
             raise StageError("no final video to approve")

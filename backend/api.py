@@ -551,6 +551,21 @@ def reroll_scene(episode_id: str, seq: int, body: dict[str, Any] | None = None) 
         s, e, seq=seq, prompt_override=(body or {}).get("prompt"), model=(body or {}).get("model")))
 
 
+@app.post("/api/episodes/{episode_id}/seams")
+def set_seams(episode_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Save the human seam overrides for assembly: {seams: {"<incoming shot idx>": "auto"|"none"|kind}}."""
+    store = JobStore()
+    ep_store = EpisodeStore(store)
+    ep = ep_store.get(episode_id)
+    if not ep:
+        raise HTTPException(404, "episode not found")
+    seams = body.get("seams") or {}
+    ep.timeline = {**(ep.timeline or {}), "seams": {str(k): str(v) for k, v in seams.items()}}
+    ep.log("seams_edited", {"overrides": len(seams)})
+    ep_store.update(ep)
+    return _ep_view(episode_id)
+
+
 @app.get("/api/episodes/{episode_id}/scene/{seq}/veo-prompt")
 def scene_veo_prompt(episode_id: str, seq: int) -> dict[str, Any]:
     """The editable Veo prompt for a scene: a saved override / the prompt last used, else the default
@@ -602,10 +617,11 @@ def _episode_media(episode_id: str, kind: str, seq: int | None = None):
     ep = EpisodeStore(store).get(episode_id)
     if not ep:
         raise HTTPException(404, "episode not found")
-    if kind in ("rough-cut", "audio-cut", "final"):
-        key = {"rough-cut": "rough_cut", "audio-cut": "audio_cut", "final": "final_video"}[kind]
+    if kind in ("rough-cut", "audio-cut", "final", "music"):
+        key = {"rough-cut": "rough_cut", "audio-cut": "audio_cut", "final": "final_video",
+               "music": "music"}[kind]
         path = (ep.timeline or {}).get(key)
-        media = "video/mp4"
+        media = "audio/mpeg" if kind == "music" else "video/mp4"
     else:
         sc = next((s for s in ep.scenes if s.get("seq") == seq), None)
         if not sc:
@@ -641,6 +657,11 @@ def episode_audio_cut(episode_id: str):
 @app.get("/api/episodes/{episode_id}/final")
 def episode_final(episode_id: str):
     return _episode_media(episode_id, "final")
+
+
+@app.get("/api/episodes/{episode_id}/music")
+def episode_music(episode_id: str):
+    return _episode_media(episode_id, "music")
 
 
 # --------------------------------------------------------------------------- storyboards / posts

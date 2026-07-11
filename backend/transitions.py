@@ -133,34 +133,57 @@ def _loc(scene: dict) -> str:
     return (scene.get("heading") or "").split(" - ")[0].strip().lower() or "unknown"
 
 
-def interleave(scene_shots: list[ScoredShot], scenes: list[dict], channel: Channel) -> list[ScoredShot]:
+def interleave(scene_shots: list[ScoredShot], scenes: list[dict], channel: Channel,
+               *, overrides: dict | None = None) -> list[ScoredShot]:
     """Splice transitions per the cut-rhythm rules: the DEFAULT seam is a hard cut. A transition is
     inserted only when the location changes (or time jumps) INTO a beat whose type maps to a clip
     that exists in the channel library — never back-to-back, at least MIN_CUTS_BETWEEN hard cuts
-    apart, and at most ceil(scenes/3) per episode. Breaks the every-seam metronome."""
+    apart, and at most ceil(scenes/3) per episode. Breaks the every-seam metronome.
+
+    `overrides` (the human seam editor) is keyed by the INCOMING shot index as a string:
+    "none" forces a hard cut, a kind name forces that transition (bypassing the auto rules),
+    "auto"/absent applies the rules."""
     import math
+    overrides = overrides or {}
     lib_by_kind: dict[str, list[dict]] = {}
     for t in (channel.transitions or []):
         if Path(t.get("path", "")).is_file():
             lib_by_kind.setdefault(t.get("kind", ""), []).append(t)
-    if not lib_by_kind or len(scene_shots) < 2:
+    if len(scene_shots) < 2:
         return scene_shots
     rng = random.Random(len(scene_shots))          # deterministic per episode length (repeatable cuts)
     max_transitions = math.ceil(len(scene_shots) / 3)
     used, cuts_since_last = 0, MIN_CUTS_BETWEEN    # allow one early if warranted
     out = [scene_shots[0]]
+
+    def _insert(kind: str) -> bool:
+        if kind not in lib_by_kind:
+            return False
+        t = rng.choice(lib_by_kind[kind])
+        out.append(ScoredShot("talking", t["path"], media_duration(t["path"]) or 2.0))
+        return True
+
     for i in range(1, len(scene_shots)):
+        ov = str(overrides.get(str(i), "auto") or "auto").lower()
         prev_sc, cur_sc = scenes[i - 1], scenes[i]
-        eligible = (_loc(prev_sc) != _loc(cur_sc)) or bool(cur_sc.get("time_jump"))
-        kind = BEAT_TO_TRANSITION.get(cur_sc.get("beat_type") or "neutral")
-        candidates = [k for k in ([kind] + ENERGY_ALTERNATES.get(cur_sc.get("beat_type") or "", []))
-                      if k and k in lib_by_kind] if kind else []
-        if eligible and candidates and used < max_transitions and cuts_since_last >= MIN_CUTS_BETWEEN:
-            t = rng.choice(lib_by_kind[rng.choice(candidates)])
-            out.append(ScoredShot("talking", t["path"], media_duration(t["path"]) or 2.0))
-            used += 1
-            cuts_since_last = 0
+        if ov == "none":
+            cuts_since_last += 1                   # human forced a hard cut
+        elif ov != "auto":
+            if _insert(ov):                        # human forced a specific transition
+                used += 1
+                cuts_since_last = 0
+            else:
+                cuts_since_last += 1
         else:
-            cuts_since_last += 1                   # hard cut (the default)
+            eligible = (_loc(prev_sc) != _loc(cur_sc)) or bool(cur_sc.get("time_jump"))
+            kind = BEAT_TO_TRANSITION.get(cur_sc.get("beat_type") or "neutral")
+            candidates = [k for k in ([kind] + ENERGY_ALTERNATES.get(cur_sc.get("beat_type") or "", []))
+                          if k and k in lib_by_kind] if kind else []
+            if eligible and candidates and used < max_transitions and cuts_since_last >= MIN_CUTS_BETWEEN:
+                _insert(rng.choice(candidates))
+                used += 1
+                cuts_since_last = 0
+            else:
+                cuts_since_last += 1               # hard cut (the default)
         out.append(scene_shots[i])
     return out
