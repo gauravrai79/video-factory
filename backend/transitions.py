@@ -111,19 +111,56 @@ def delete_transition(store, channel: Channel, tid: str) -> bool:
     return True
 
 
+# beat_type of the INCOMING scene -> transition kind (None = always hard cut into that beat).
+BEAT_TO_TRANSITION: dict[str, str | None] = {
+    "reveal": "comic_slam",
+    "punchline": "comic_slam",
+    "chase": "whip_pan",
+    "impact_gag": "dust_puff",
+    "zruv_entrance": "hero_rush",
+    "establishing": "blaze",
+    "dialogue": None,
+    "neutral": None,
+}
+ENERGY_ALTERNATES = {"chase": ["whip_pan", "blaze"], "impact_gag": ["dust_puff", "dhoom"],
+                     "punchline": ["comic_slam", "dhoom"]}
+MIN_CUTS_BETWEEN = 3
+
+
+def _loc(scene: dict) -> str:
+    if scene.get("location_id"):
+        return str(scene["location_id"]).lower()
+    return (scene.get("heading") or "").split(" - ")[0].strip().lower() or "unknown"
+
+
 def interleave(scene_shots: list[ScoredShot], scenes: list[dict], channel: Channel) -> list[ScoredShot]:
-    """Splice a random transition between consecutive scenes at each location/time change. Returns a
-    new shot list (transitions have their own whoosh audio, added as 'talking' shots)."""
-    lib = [t for t in (channel.transitions or []) if Path(t.get("path", "")).is_file()]
-    if not lib or len(scene_shots) < 2:
+    """Splice transitions per the cut-rhythm rules: the DEFAULT seam is a hard cut. A transition is
+    inserted only when the location changes (or time jumps) INTO a beat whose type maps to a clip
+    that exists in the channel library — never back-to-back, at least MIN_CUTS_BETWEEN hard cuts
+    apart, and at most ceil(scenes/3) per episode. Breaks the every-seam metronome."""
+    import math
+    lib_by_kind: dict[str, list[dict]] = {}
+    for t in (channel.transitions or []):
+        if Path(t.get("path", "")).is_file():
+            lib_by_kind.setdefault(t.get("kind", ""), []).append(t)
+    if not lib_by_kind or len(scene_shots) < 2:
         return scene_shots
     rng = random.Random(len(scene_shots))          # deterministic per episode length (repeatable cuts)
+    max_transitions = math.ceil(len(scene_shots) / 3)
+    used, cuts_since_last = 0, MIN_CUTS_BETWEEN    # allow one early if warranted
     out = [scene_shots[0]]
     for i in range(1, len(scene_shots)):
-        prev = (scenes[i - 1].get("heading") or "").strip().lower()
-        cur = (scenes[i].get("heading") or "").strip().lower()
-        if cur and cur != prev:                    # new location/time -> transition
-            t = rng.choice(lib)
+        prev_sc, cur_sc = scenes[i - 1], scenes[i]
+        eligible = (_loc(prev_sc) != _loc(cur_sc)) or bool(cur_sc.get("time_jump"))
+        kind = BEAT_TO_TRANSITION.get(cur_sc.get("beat_type") or "neutral")
+        candidates = [k for k in ([kind] + ENERGY_ALTERNATES.get(cur_sc.get("beat_type") or "", []))
+                      if k and k in lib_by_kind] if kind else []
+        if eligible and candidates and used < max_transitions and cuts_since_last >= MIN_CUTS_BETWEEN:
+            t = rng.choice(lib_by_kind[rng.choice(candidates)])
             out.append(ScoredShot("talking", t["path"], media_duration(t["path"]) or 2.0))
+            used += 1
+            cuts_since_last = 0
+        else:
+            cuts_since_last += 1                   # hard cut (the default)
         out.append(scene_shots[i])
     return out

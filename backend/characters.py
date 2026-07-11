@@ -95,7 +95,9 @@ class Character:
         model renders the right character (reinforcing, not replacing, the reference images). Prefers
         an explicit appearance/dna_prompt over a bare name so shots aren't under-specified."""
         pr = self.persona or {}
-        who = self.name + (f" (a {self.species})" if self.species and self.species != "person" else "")
+        # No "(a {species})" parenthetical — bad grammar ("a animal") and the appearance string
+        # already names the species ("a small fawn French bulldog").
+        who = self.name
         appearance = (pr.get("appearance") or self.dna_prompt or "").strip()
         bits = [
             who,
@@ -107,6 +109,22 @@ class Character:
         ]
         line = ", ".join(b for b in bits if b)
         return line or who
+
+    def speaker_tag(self) -> str:
+        """Short VISUAL tag for dialogue attribution in video prompts (\"the small fawn French
+        bulldog\") — a name alone means nothing to the model; with two characters in frame the
+        speaker must be identified by what it can SEE."""
+        appearance = ((self.persona or {}).get("appearance") or self.dna_prompt or "").strip()
+        if not appearance:
+            return self.name
+        # first ~8 words, article normalized to "the"
+        words = appearance.split()
+        head = " ".join(words[:8]).rstrip(",;.")
+        for art in ("a ", "an ", "the "):
+            if head.lower().startswith(art):
+                head = head[len(art):]
+                break
+        return f"{self.name}, the {head}"
 
 
 class CharacterStore:

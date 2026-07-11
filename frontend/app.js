@@ -361,6 +361,7 @@ function modalScene(seq) {
     const scenes = (S.ep.scenes || []).map((x) => ({ ...x }));
     const ns = scenes[seq];
     ns.heading = $("#s-head").value; ns.action = $("#s-act").value; ns.camera = $("#s-cam").value;
+    ns.motion = ns.action; ns.frozen_beat = "";   // backend re-derives the still-safe frozen beat
     ns.shot_type = $("#s-shot").value; ns.duration_s = +$("#s-dur").value; ns.narration = $("#s-narr").value;
     ns.dialogue = [...document.querySelectorAll("#s-dlg [data-dlg]")].map((r, i) => ({
       speaker: r.querySelector(".d-spk").value, line: r.querySelector(".d-line").value.trim(),

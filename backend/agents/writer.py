@@ -235,26 +235,34 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         f"Hook: {idea.get('hook','')}\n\n"
         f"Produce EXACTLY {n} scenes totalling ~{channel.target_duration_s}s. Cast character_ids: {cast_names}.\n"
         + _SHOT_RULES.format(budget=channel.video_budget) +
-        "Write each scene like a film SHOT, not a summary. The `action` field MUST be a vivid, "
-        "self-contained cinematic description a video model can render directly — for THIS beat: the "
-        "environment detail, where each character is and what they are physically doing (blocking), "
-        "their expression and body language, key props, and the lighting/mood. Do NOT re-describe a "
-        "character's fixed appearance (it is locked separately) — describe what they DO, where they "
-        "are, and how they feel. Make `camera` specific: shot size + angle + movement "
-        "(e.g. 'low-angle medium two-shot, slow push-in').\n"
-        "Density target for `action` (adapt per beat): 'At a neon-lit chai stall in light rain, Zruv "
-        "crouches low with a worried frown while Jango sits alert at ground level beside him, both "
-        "washed in warm neon; steam curls from a kettle; wet reflections shimmer on the wet pavement.'\n"
+        "Write each scene like a film SHOT, not a summary, split into TWO fields:\n"
+        "  - `frozen_beat`: the KEYFRAME — one STILL, STABLE instant, everything at rest or in a "
+        "held pose. Blocking (where each character is, ~scale in frame), expression, eyelines "
+        "(who looks at what), key props ON THE GROUND or held, one continuous ground plane, a scale "
+        "anchor for any hole/large object (e.g. 'pothole roughly the width of a scooter wheel'), and "
+        "an agent for any vehicle (a rider on the scooter, never an empty moving vehicle). "
+        "STRICTLY NO motion words (no mid-air, flying, spilling, tumbling, launching, 'about to').\n"
+        "  - `motion`: ALL the movement for the video model — what moves, how, in what order, plus "
+        "physics and comic timing. Every motion word lives HERE.\n"
+        "Do NOT re-describe a character's fixed appearance (it is locked separately) — describe what "
+        "they DO, where they are, and how they feel. Make `camera` specific: shot size + angle + "
+        "movement (movement belongs to the video stage).\n"
         "Keep the main characters ON SCREEN and acting in MOST scenes — use character-free b-roll "
         "sparingly (at most ~3-4 establishing/insert shots in the whole episode).\n"
-        "For each scene give: heading (location - time of day), action (the rich shot above), camera, "
-        "cast_present (character_ids on screen), dialogue (list of {speaker, line, delivery}), narration "
-        "(VO text, may be empty), shot_type, duration_s.\n"
+        "Also give per scene: `location_id` (stable slug per location, e.g. 'market_street_A' — same "
+        "value whenever the story returns to that place), `time_jump` (true only if time skips since "
+        "the previous scene), `beat_type` (one of: establishing, dialogue, reveal, punchline, chase, "
+        "impact_gag, zruv_entrance, neutral).\n"
+        "For each scene give: heading (location - time of day), frozen_beat, motion, camera, "
+        "cast_present (character_ids on screen — EVERY character visible in the shot), dialogue "
+        "(list of {speaker, line, delivery}), narration (VO text, may be empty), shot_type, "
+        "duration_s, location_id, time_jump, beat_type.\n"
         f"Every `line` and `narration` value MUST be written in {getattr(channel, 'language', 'English')}.\n"
         "Respond with ONLY JSON, no prose:\n"
-        '{"scenes": [{"heading": "...", "action": "...", "camera": "...", "cast_present": ["id"], '
-        '"dialogue": [{"speaker": "id", "line": "...", "delivery": "..."}], "narration": "...", '
-        '"shot_type": "lipsync_still", "duration_s": 6}]}'
+        '{"scenes": [{"heading": "...", "frozen_beat": "...", "motion": "...", "camera": "...", '
+        '"cast_present": ["id"], "dialogue": [{"speaker": "id", "line": "...", "delivery": "..."}], '
+        '"narration": "...", "shot_type": "lipsync_still", "duration_s": 6, '
+        '"location_id": "market_street_A", "time_jump": false, "beat_type": "dialogue"}]}'
     )
     try:
         text, usage = _chat(system, user, model, temperature=0.8, max_tokens=10000)
@@ -262,7 +270,7 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         scenes = data.get("scenes") or []
         if not isinstance(scenes, list) or not scenes:
             raise ValueError("no scenes returned")
-        scenes = _normalize_scenes(scenes, channel)
+        scenes = _normalize_scenes(scenes, channel, cast_chars)
         return WriterResult(ok=True, data={"scenes": scenes}, model=model, usage=usage,
                             cost_usd=float(usage.get("cost", 0.0) or 0.0))
     except Exception as e:  # noqa: BLE001
@@ -286,15 +294,69 @@ def _single_speaker(dialogue: list) -> list:
     return kept
 
 
-def _normalize_scenes(scenes: list[dict], channel) -> list[dict]:
-    """Clamp shot types + enforce the video budget (excess hero_video -> lipsync_still) and one
-    speaker per shot."""
+# Motion language that must NEVER reach a KEYFRAME (still-image) prompt — a still model can't hold
+# a mid-air instant and collapses it (empty scooter, grounded tiffin, pasted-in characters). These
+# words belong only in the video/motion prompt.
+LINT_BANNED_IN_KEYFRAME = (
+    "mid-air", "in the air", "hangs", "hanging", "airborne", "flying", "tumbling", "tumbles",
+    "spilling", "spills", "launches", "launching", "popping", "pops loose", "springing",
+    "slow-motion", "slow motion", "just as", "in the act of", "about to", "mid-", "tracking shot",
+    "camera pans", "camera tracks", "motion blur", "streaking", "bursting", "leaps", "leaping",
+    "jumps", "jumping", "flies", "swinging", "swings",
+)
+
+
+def lint_keyframe(text: str) -> list[str]:
+    """Banned motion tokens found in a keyframe prompt (empty list = clean)."""
+    low = (text or "").lower()
+    return [t for t in LINT_BANNED_IN_KEYFRAME if t in low]
+
+
+def freeze_beat(text: str) -> str:
+    """Deterministic fallback: drop the clauses that carry motion language so the remainder reads as
+    a stable, at-rest instant. Used when the writer didn't supply a clean `frozen_beat`. Splits on
+    clause boundaries; if everything is motion, returns the first clause as-is (lint then just logs)."""
+    import re
+    clauses = re.split(r"(?<=[;.])\s+|,\s+(?=\w)", (text or "").strip())
+    kept = [c for c in clauses if not lint_keyframe(c)]
+    return (", ".join(kept) if kept else (clauses[0] if clauses else "")).strip(" ,;.")
+
+
+def _location_id(heading: str) -> str:
+    """Stable location key derived from a heading like 'Roadside - Continuous' -> 'roadside'."""
+    loc = (heading or "").split(" - ")[0].split("-")[0]
+    return "".join(ch if ch.isalnum() else "_" for ch in loc.strip().lower()).strip("_") or "unknown"
+
+
+BEAT_TYPES = ("establishing", "dialogue", "reveal", "punchline", "chase", "impact_gag",
+              "zruv_entrance", "neutral")
+
+
+def _normalize_scenes(scenes: list[dict], channel, cast_chars: list | None = None) -> list[dict]:
+    """Clamp shot types + video budget, one speaker per shot, cast auto-fix (anyone named in the
+    action MUST be in cast_present or their reference photos never reach the model — the identity-
+    drift bug), max 3 characters per shot, and the keyframe/video split fields with lint-safe
+    fallbacks."""
     valid = {"broll", "still_kenburns", "lipsync_still", "hero_video"}
+    name_to_id = {c.name.strip().lower(): c.character_id for c in (cast_chars or [])}
     videos = 0
     out = []
     for i, s in enumerate(scenes):
         st = s.get("shot_type") if s.get("shot_type") in valid else "still_kenburns"
-        cast = s.get("cast_present") or []
+        action = (s.get("action") or "").strip()
+        motion = (s.get("motion") or "").strip() or action
+        action = action or motion                # UI + legacy paths read `action`
+        frozen = (s.get("frozen_beat") or "").strip()
+        if not frozen or lint_keyframe(frozen):
+            frozen = freeze_beat(frozen or action)
+        cast = list(s.get("cast_present") or [])
+        # Cast auto-fix: a character described in the shot text but absent from cast_present would
+        # render from TEXT ONLY (no reference photos) and drift. Add them.
+        blob = f"{action} {motion} {frozen}".lower()
+        for nm, cid in name_to_id.items():
+            if nm in blob and cid not in cast:
+                cast.append(cid)
+        cast = cast[:3]                          # per-shot cap: max 3 named characters
         has_dialogue = bool(_single_speaker(s.get("dialogue") or []))
         # Character on screen -> MUST move (never a still). Keep the writer's choice between
         # hero_video (full dynamic action motion) and lipsync_still (lip-synced talking); only
@@ -309,12 +371,19 @@ def _normalize_scenes(scenes: list[dict], channel) -> list[dict]:
                 st = "still_kenburns"          # action over budget -> pan the still (rare)
             else:
                 videos += 1
+        beat = s.get("beat_type") if s.get("beat_type") in BEAT_TYPES else (
+            "dialogue" if has_dialogue else "neutral")
         out.append({
             "seq": i,
             "heading": s.get("heading", ""),
-            "action": s.get("action", ""),
+            "action": action,
+            "frozen_beat": frozen,               # still-safe instant (keyframe stage)
+            "motion": motion,                    # ALL movement (video stage)
+            "location_id": s.get("location_id") or _location_id(s.get("heading", "")),
+            "time_jump": bool(s.get("time_jump", False)),
+            "beat_type": beat,
             "camera": s.get("camera", ""),
-            "cast_present": s.get("cast_present") or [],
+            "cast_present": cast,
             "dialogue": _single_speaker(s.get("dialogue") or []),
             "narration": s.get("narration", ""),
             "shot_type": st,
@@ -355,5 +424,5 @@ def _stub_script(channel, cast_chars: list, idea: dict[str, Any], n: int) -> Wri
             "shot_type": st,
             "duration_s": round((channel.target_duration_s or 60) / n, 1),
         })
-    return WriterResult(ok=True, data={"scenes": _normalize_scenes(raw, channel)},
+    return WriterResult(ok=True, data={"scenes": _normalize_scenes(raw, channel, cast_chars)},
                         model="stub", stubbed=True)

@@ -24,7 +24,8 @@ from .capabilities.fal_video import image_ref
 from .channels import Channel, ChannelStore
 from .characters import Character, CharacterStore
 from .episodes import Episode, EpisodeStore, Stage, StageStatus, next_stage
-from .finishing import FFMPEG, ScoredShot, ShotMedia, assemble, assemble_scored, media_duration
+from .finishing import (FFMPEG, ScoredShot, ShotMedia, assemble, assemble_scored, media_duration,
+                        speech_end)
 from .spec import OutputSpec, get_spec
 
 
@@ -170,6 +171,10 @@ def _gen_scene_veo(scene: dict, cast_map: dict[str, Character], ch: Channel,
             "prompt": prompt, "error": res.error, "has_audio": bool(speech and res.success),
             "cost": res.cost_usd}
     if res.success:
+        # Preserve the WRITER's duration (cut rhythm) before snapping to the actual clip length —
+        # Veo rounds to 4/6/8s and assembly trims silent clips back to the scripted beat.
+        if not scene.get("scripted_duration_s"):
+            scene["scripted_duration_s"] = scene.get("duration_s", 6)
         scene["duration_s"] = round(media_duration(path) or scene.get("duration_s", 6), 2)
     return info, res.cost_usd
 
@@ -253,16 +258,27 @@ def _music_prompt(ch: Channel) -> str:
 
 
 def _shot_for_scene(scene: dict) -> ScoredShot:
-    """Build the scored shot from a scene's Veo clip. Clips with native audio use 'talking' (keep the
-    clip's own voice); silent clips use 'video' (assembly pads a silent track); a missing clip falls
-    back to a Ken-Burns pan of the still so assembly never hard-fails."""
+    """Build the scored shot from a scene's Veo clip, applying CUT-RHYTHM trims (uniform 6-8s clips
+    laid end-to-end read as amateur):
+      - dialogue clips ('talking'): NEVER cut into speech — only trim trailing dead air after the
+        line ends (silence-detected), keeping a small breath.
+      - silent clips ('video'): trim back to the writer's scripted beat length (Veo rounds up to
+        4/6/8s), so shot lengths vary with the script's rhythm again.
+    A missing clip falls back to a Ken-Burns pan so assembly never hard-fails."""
     clip = scene.get("clip") or {}
-    dur = scene.get("duration_s", 6)
+    actual = scene.get("duration_s", 6)
+    scripted = scene.get("scripted_duration_s") or actual
     if clip.get("status") == "ok" and clip.get("path"):
-        return ScoredShot("talking" if clip.get("has_audio") else "video", clip["path"], dur)
+        if clip.get("has_audio"):
+            dur = actual
+            end = speech_end(clip["path"])
+            if end:                                       # trailing dead air -> trim to line + breath
+                dur = round(min(actual, end + 0.35), 2)
+            return ScoredShot("talking", clip["path"], dur)
+        return ScoredShot("video", clip["path"], round(min(actual, max(scripted, 1.5)), 2))
     still = (scene.get("reference_image") or {}).get("path")
     zoom = "in" if scene["seq"] % 2 == 0 else "out"
-    return ScoredShot("kenburns", still, dur, zoom=zoom)
+    return ScoredShot("kenburns", still, min(actual, max(scripted, 1.5)), zoom=zoom)
 
 
 def _assemble_scenes_cut(ep: Episode, ch: Channel, *, music_path: str | None = None,
@@ -621,6 +637,15 @@ def edit_artifact(store, ep: Episode, *, idea: dict[str, Any] | None = None,
         ep.title = idea.get("title", ep.title)
         ep.log("idea_edited", {})
     if scenes is not None:
+        from .agents.writer import freeze_beat, lint_keyframe, _location_id
+        for s in scenes:                    # keep the keyframe/video split coherent after hand-edits
+            if not isinstance(s, dict):
+                continue
+            s["motion"] = (s.get("motion") or s.get("action") or "").strip()
+            fb = (s.get("frozen_beat") or "").strip()
+            if not fb or lint_keyframe(fb):
+                s["frozen_beat"] = freeze_beat(s["motion"])
+            s.setdefault("location_id", _location_id(s.get("heading", "")))
         ep.scenes = scenes
         ep.log("script_edited", {"scenes": len(scenes)})
     return eps.update(ep)

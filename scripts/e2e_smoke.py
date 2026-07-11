@@ -43,7 +43,42 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         _fails.append(name)
 
 
+def unit_checks() -> None:
+    """Pure-function checks for the keyframe linter / frozen-beat fallback / transition splicer."""
+    from backend.agents.writer import lint_keyframe, freeze_beat, _location_id
+    from backend import transitions as tr
+    from backend.finishing import ScoredShot
+
+    check("lint flags motion words", bool(lint_keyframe("the tiffin tumbles mid-air, spilling rotis")))
+    check("lint passes a frozen beat", not lint_keyframe(
+        "a rider sits on a red scooter beside a shallow pothole; a steel tiffin rests on the rack"))
+    frozen = freeze_beat("Jango sits by the pothole, the tiffin tumbles mid-air spilling rotis, dust settles")
+    check("freeze_beat strips motion clauses", not lint_keyframe(frozen) and "Jango sits" in frozen)
+    check("location_id derivation", _location_id("Market Street - Morning") == "market_street")
+
+    # splicer: hard-cut default, transition only on location change with mapped+available kind,
+    # never more than ceil(n/3), min 3 cuts between
+    tmp = Path(tempfile.mkdtemp(prefix="vf_tr_"))
+    clip = tmp / "t.mp4"
+    clip.write_bytes(b"0")
+    class _Ch:                                    # minimal channel stand-in
+        transitions = [{"id": "x", "kind": "comic_slam", "path": str(clip)}]
+    scenes = []
+    for i in range(9):                            # location changes every scene, all 'reveal'
+        scenes.append({"heading": f"Loc{i} - Day", "location_id": f"loc{i}", "beat_type": "reveal",
+                       "time_jump": False})
+    shots = [ScoredShot("video", "v.mp4", 4) for _ in scenes]
+    out = tr.interleave(shots, scenes, _Ch())
+    inserted = len(out) - len(shots)
+    check("splicer caps + spaces transitions", 0 < inserted <= 3, f"inserted={inserted} (want 1..3)")
+    same_loc = [dict(s, location_id="same") for s in scenes]
+    out2 = tr.interleave(shots, same_loc, _Ch())
+    check("no transition inside a continuous location", len(out2) == len(shots))
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
+    unit_checks()
     store = JobStore()
     eps, chs = EpisodeStore(store), ChannelStore(store)
     ch = next((c for c in chs.list(TENANT) if c.cast_ids()), None)

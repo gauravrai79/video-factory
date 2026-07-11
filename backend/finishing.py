@@ -17,6 +17,7 @@ import glob
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -96,6 +97,24 @@ def media_duration(path: str | Path) -> float:
         return round(float(probe(path).get("format", {}).get("duration", 0) or 0), 3)
     except Exception:
         return 0.0
+
+
+def speech_end(path: str | Path, *, noise_db: int = -35, min_silence_s: float = 0.5) -> float | None:
+    """Second at which the last audible sound ends (None = no trailing silence worth trimming).
+    Used to trim dead air after a spoken line without ever cutting into the speech itself."""
+    cmd = [FFMPEG, "-i", str(path), "-af", f"silencedetect=noise={noise_db}dB:d={min_silence_s}",
+           "-f", "null", "-"]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    total = media_duration(path)
+    starts = re.findall(r"silence_start:\s*([0-9.]+)", res.stderr)
+    ends = re.findall(r"silence_end:\s*([0-9.]+)", res.stderr)
+    if not starts or not total:
+        return None
+    last_start = float(starts[-1])
+    # trailing silence = a silence that starts and never ends (or ends at the file's end)
+    if len(ends) < len(starts) or (ends and abs(float(ends[-1]) - total) < 0.15):
+        return last_start if total - last_start >= 0.8 else None
+    return None
 
 
 def stub_image(output_path: str | Path, *, width: int = 1280, height: int = 720,
@@ -409,11 +428,18 @@ def assemble_scored(
         n = len(scene_clips)
         concat_in = "".join(f"[{i}:v][{i}:a]" for i in range(n))
         fg = f"{concat_in}concat=n={n}:v=1:a=1[cv][ca]"
+        # Normalize the final mix to YouTube loudness (-14 LUFS integrated, -1 dBTP ceiling) so
+        # episodes don't clip on peaks or vary wildly between clips (measured -15.8 LUFS / +0.9 dBTP
+        # before this). Single-pass loudnorm is accurate enough for batch delivery.
+        loudnorm = "loudnorm=I=-14:TP=-1:LRA=11"
         if music_path:
-            fg += f";[{n}:a]volume={music_gain}[mus];[ca][mus]amix=inputs=2:duration=first:dropout_transition=0[a]"
+            fg += (f";[{n}:a]volume={music_gain}[mus];"
+                   f"[ca][mus]amix=inputs=2:duration=first:dropout_transition=0[amix];"
+                   f"[amix]{loudnorm}[a]")
             alabel = "[a]"
         else:
-            alabel = "[ca]"
+            fg += f";[ca]{loudnorm}[a]"
+            alabel = "[a]"
         cmd += ["-filter_complex", fg, "-map", "[cv]", "-map", alabel,
                 "-c:v", spec.video_codec, "-b:v", f"{spec.video_bitrate_kbps}k",
                 "-pix_fmt", "yuv420p", "-r", str(spec.fps),
