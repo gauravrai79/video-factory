@@ -54,7 +54,7 @@ def stage_estimate(ep: Episode) -> float:
     if ep.stage == Stage.SCENES.value:
         res = os.environ.get("VF_VIDEO_RESOLUTION", "720p")
         res = res if res in ("720p", "1080p") else "720p"
-        return round(sum(fal_video.veo_lite_billed_cost(s.get("duration_s", 6), res, audio=_scene_has_speech(s))
+        return round(sum(fal_video.veo_lite_billed_cost(s.get("duration_s", 6), res, audio=True)
                          for s in ep.scenes), 4)
     if ep.stage == Stage.AUDIO.value:                 # native audio is already in the clips; only music
         return round(pricing.music_cost(None, sum(s.get("duration_s", 6) for s in ep.scenes)), 4)
@@ -148,28 +148,40 @@ def _scene_has_speech(scene: dict) -> bool:
     return bool(dlg) or bool((scene.get("narration") or "").strip())
 
 
+def _speech_seconds(scene: dict) -> float:
+    """Seconds the scene's spoken line needs (Hindi/Devanagari ~12 chars/s + a breath). 0 = silent."""
+    dlg = next((d for d in (scene.get("dialogue") or [])
+                if isinstance(d, dict) and (d.get("line") or "").strip()), None)
+    text = (dlg.get("line", "") if dlg else "") or (scene.get("narration") or "")
+    text = text.strip()
+    return round(len(text) / 12.0 + 1.2, 1) if text else 0.0
+
+
 def _gen_scene_veo(scene: dict, cast_map: dict[str, Character], ch: Channel,
                    out_dir: Path) -> tuple[dict, float]:
-    """Render ONE scene as a Veo 3.1 Lite clip: motion + native audio (dialogue + lip-sync, or a
-    voiceover) generated in a single pass from the scene's reference still. Replaces the old
-    wan-video / TTS / VEED-lipsync / Ken-Burns stack."""
+    """Render ONE scene as a Veo 3.1 Lite clip: motion + native audio generated in a single pass from
+    the scene's reference still. EVERY clip gets audio (dialogue+lip-sync when there's a line, ambient
+    sound/SFX otherwise — dead-silent clips read as broken), and the clip duration is stretched to
+    FIT the spoken line so lip-sync isn't rushed."""
     present = shot_prompt.scene_cast(scene, cast_map)
     still = (scene.get("reference_image") or {}).get("path")
     if not still:
         return {"status": "failed", "error": "no reference image"}, 0.0
-    speech = _scene_has_speech(scene)                 # voice clips need audio; silent b-roll is cheaper
+    speech = _scene_has_speech(scene)
     res_ = os.environ.get("VF_VIDEO_RESOLUTION", "720p")
     if res_ not in ("720p", "1080p"):
         res_ = "720p"
     path = str(out_dir / "clips" / f"{scene['seq']:03d}.mp4")
     prompt = (scene.get("veo_prompt_override") or "").strip() or shot_prompt.veo_prompt(scene, present, ch)
+    # duration must FIT the line (rushed lip-sync looks broken); writer caps lines at ~80 chars
+    dur = max(float(scene.get("duration_s", 6) or 6), _speech_seconds(scene))
     res = fal_video.generate_native_video(
         prompt=prompt, image_url=image_ref(still),
-        output_path=path, duration_s=scene.get("duration_s", 6), resolution=res_,
-        generate_audio=speech, aspect_ratio=("9:16" if ch.is_short() else "16:9"), execute=True)
+        output_path=path, duration_s=dur, resolution=res_,
+        generate_audio=True, aspect_ratio=("9:16" if ch.is_short() else "16:9"), execute=True)
     info = {"path": path if res.success else "", "status": "ok" if res.success else "failed",
-            "prompt": prompt, "error": res.error, "has_audio": bool(speech and res.success),
-            "cost": res.cost_usd}
+            "prompt": prompt, "error": res.error, "has_audio": res.success,
+            "has_speech": bool(speech), "cost": res.cost_usd}
     if res.success:
         # Preserve the WRITER's duration (cut rhythm) before snapping to the actual clip length —
         # Veo rounds to 4/6/8s and assembly trims silent clips back to the scripted beat.
@@ -269,13 +281,18 @@ def _shot_for_scene(scene: dict) -> ScoredShot:
     actual = scene.get("duration_s", 6)
     scripted = scene.get("scripted_duration_s") or actual
     if clip.get("status") == "ok" and clip.get("path"):
-        if clip.get("has_audio"):
+        # Every Veo clip carries its own audio (speech or ambient) -> 'talking' keeps it through
+        # assembly. Speech clips only trim trailing dead air (never into the line); ambient clips
+        # trim back to the scripted beat length for cut rhythm.
+        if clip.get("has_speech"):
             dur = actual
             end = speech_end(clip["path"])
             if end:                                       # trailing dead air -> trim to line + breath
                 dur = round(min(actual, end + 0.35), 2)
             return ScoredShot("talking", clip["path"], dur)
-        return ScoredShot("video", clip["path"], round(min(actual, max(scripted, 1.5)), 2))
+        dur = round(min(actual, max(scripted, 1.5)), 2)
+        mode = "talking" if clip.get("has_audio") else "video"
+        return ScoredShot(mode, clip["path"], dur)
     still = (scene.get("reference_image") or {}).get("path")
     zoom = "in" if scene["seq"] % 2 == 0 else "out"
     return ScoredShot("kenburns", still, min(actual, max(scripted, 1.5)), zoom=zoom)
@@ -374,14 +391,44 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
     elif stage == Stage.SCRIPT:
         if not ep.idea:
             return _fail(eps, ep, "approve an idea before scripting")
+        from .agents import script_qc
         res = writer.script(ch, cast, ep.idea, model=ep.writer_model)
         if not res.ok:
             return _fail(eps, ep, res.error or "scripting failed")
-        ep.scenes = res.data["scenes"]
-        ep.refs_batch_done = False          # fresh script -> old reference batch is invalid
         _bill(ep, res)
+        # QC gate: judge -> (below threshold) targeted revision with the judge's notes -> re-judge,
+        # up to MAX_ITERATIONS writer passes. The best-scoring version parks at the human gate with
+        # its scorecard either way — the gate informs the human, it never blocks them.
+        thr = script_qc.threshold(ch)
+        best_scenes, best_qc = res.data["scenes"], None
+        scenes = res.data["scenes"]
+        for it in range(1, script_qc.MAX_ITERATIONS + 1):
+            q = script_qc.judge(ch, cast, ep.idea, scenes)
+            if not q.ok:                        # judge outage -> park what we have, unscored
+                best_scenes, best_qc = scenes, {"score": None, "error": q.error}
+                break
+            _bill(ep, q)
+            qc = {**q.data, "iterations": it, "threshold": thr, "judge_model": q.model}
+            if best_qc is None or (qc.get("score") or 0) > (best_qc.get("score") or 0):
+                best_scenes, best_qc = scenes, qc
+            if (qc.get("score") or 0) >= thr or it == script_qc.MAX_ITERATIONS:
+                break
+            rev = writer.revise_script(ch, cast, ep.idea, scenes, qc.get("notes") or [],
+                                       model=ep.writer_model)
+            if not rev.ok:
+                break
+            _bill(ep, rev)
+            scenes = rev.data["scenes"]
+        ep.scenes = best_scenes
+        if best_qc is not None:
+            best_qc["passed"] = bool((best_qc.get("score") or 0) >= thr)
+            script_qc.attach_intents(ep.scenes, best_qc.pop("intents", []))
+            ep.script_qc = best_qc
+        ep.refs_batch_done = False          # fresh script -> old reference batch is invalid
         ep.stage_status = StageStatus.AWAITING_REVIEW.value
-        ep.log("script", {"scenes": len(ep.scenes), "model": res.model, "stub": res.stubbed})
+        ep.log("script", {"scenes": len(ep.scenes), "model": res.model, "stub": res.stubbed,
+                          "qc_score": (ep.script_qc or {}).get("score"),
+                          "qc_iterations": (ep.script_qc or {}).get("iterations")})
 
     elif stage == Stage.REFS:
         if not ep.scenes:
@@ -504,7 +551,7 @@ def generate_scenes(store, ep: Episode, *, seqs: list[int] | None = None) -> Epi
     est = stage_estimate(ep) if want is None else round(sum(
         fal_video.veo_lite_billed_cost(s.get("duration_s", 6),
             os.environ.get("VF_VIDEO_RESOLUTION", "720p") if os.environ.get("VF_VIDEO_RESOLUTION") in ("720p", "1080p") else "720p",
-            audio=_scene_has_speech(s)) for s in ep.scenes if s.get("seq") in want), 4)
+            audio=True) for s in ep.scenes if s.get("seq") in want), 4)
     if est > episode_ceiling_usd():
         return _fail(eps, ep, f"est ${est} over episode ceiling ${episode_ceiling_usd()}")
     cast_map = _cast_map(cs, ep.cast or ch.cast_ids())

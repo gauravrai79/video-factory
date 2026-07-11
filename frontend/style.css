@@ -256,6 +256,17 @@ svg { display: block; }
 .kv { display: grid; grid-template-columns: 130px 1fr; gap: 8px 14px; font-size: 13px; }
 .kv .k { color: var(--muted); }
 
+.qc-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin: 0 0 16px; max-width: 620px; }
+.qc-card.pass { border-color: rgba(80, 200, 120, .45); }
+.qc-card.fail { border-color: rgba(229, 72, 77, .45); }
+.qc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.qc-dim { display: grid; grid-template-columns: 120px 1fr 28px; align-items: center; gap: 10px; margin: 4px 0; font-size: 12.5px; }
+.qc-bar { height: 7px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.qc-fill { display: block; height: 100%; border-radius: 4px; }
+.qc-fill.good { background: #4fc57f; } .qc-fill.mid { background: #d9a53f; } .qc-fill.bad { background: #e5484d; }
+.qc-notes { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+.qc-notes li { margin: 3px 0; }
+
 .scene-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 14px; }
 .scene-controls .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
 .tile .thumb[data-scenegen] { cursor: pointer; }

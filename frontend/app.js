@@ -318,17 +318,35 @@ function ideaCard(x, i) {
 }
 
 /* --- Script --- */
+function qcScorecard(e) {
+  const q = e.script_qc || {};
+  if (q.score == null) return "";
+  const dims = [["hook", "Hook", 25], ["narrative", "Narrative", 30], ["ending", "Ending", 20], ["comedy", "Comedy", 10], ["virality", "Virality", 15]];
+  const bd = q.breakdown || {};
+  const bars = dims.map(([k, label, w]) => {
+    const v = Math.max(0, Math.min(10, Number(bd[k] || 0)));
+    return `<div class="qc-dim"><span class="qc-label">${label} <small class="muted">×${w}</small></span>
+      <span class="qc-bar"><span class="qc-fill ${v >= 7.5 ? "good" : v >= 5 ? "mid" : "bad"}" style="width:${v * 10}%"></span></span>
+      <span class="qc-val">${v}</span></div>`;
+  }).join("");
+  const notes = (q.notes || []).length ? `<ul class="qc-notes">${q.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "";
+  return `<div class="qc-card ${q.passed ? "pass" : "fail"}">
+    <div class="qc-head"><b>Script QC ${q.score}/100</b>
+      <span class="chip">${q.passed ? `${icon("check","icon")} passed` : `${icon("x","icon")} below ${q.threshold ?? 75}`}</span>
+      <small class="muted">${q.iterations || 1} draft${(q.iterations || 1) > 1 ? "s" : ""} · judge ${esc(q.judge_model || "—")}</small></div>
+    ${bars}${notes}</div>`;
+}
 function stageScript(e, gen, ro) {
   if (ro) return e.scenes.length
-    ? `<div class="script">${e.scenes.map((s) => sceneRow(s, false)).join("")}</div>
+    ? `${qcScorecard(e)}<div class="script">${e.scenes.map((s) => sceneRow(s, false)).join("")}</div>
        ${actionBar([`<button class="btn btn-primary" data-reopen="script">${icon("edit")} Edit / re-write script</button>`])}`
     : `<p class="muted">No script recorded.</p>`;
   const chosen = e.idea && e.idea.title ? `<div class="stage-intro"><b>${esc(e.idea.title)}</b> — ${esc(e.idea.logline || "")}</div>` : "";
   if (e.stage_status === "awaiting_review" && e.scenes.length) {
     const bar = gen
-      ? `<div class="stage-intro">${spin()} Rewriting the whole script… (a few seconds)</div>`
+      ? `<div class="stage-intro">${spin()} Rewriting + QC-judging the script… (may take a minute — it revises until it passes)</div>`
       : actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve script</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Rewrite all</button>`]);
-    return `${chosen}<div class="section-title" style="margin-top:0">Script — ${e.scenes.length} scenes ${gen ? "" : `<small class="muted">· click <b>edit</b> on any scene</small>`}</div>
+    return `${chosen}${gen ? "" : qcScorecard(e)}<div class="section-title" style="margin-top:0">Script — ${e.scenes.length} scenes ${gen ? "" : `<small class="muted">· click <b>edit</b> on any scene</small>`}</div>
       <div class="script"${gen ? ' style="opacity:.45;pointer-events:none"' : ""}>${e.scenes.map((s) => sceneRow(s, !gen)).join("")}</div>
       ${bar}`;
   }

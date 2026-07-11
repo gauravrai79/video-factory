@@ -76,6 +76,15 @@ def unit_checks() -> None:
     check("no transition inside a continuous location", len(out2) == len(shots))
     shutil.rmtree(tmp, ignore_errors=True)
 
+    # script QC: weighted composite + intent attachment
+    from backend.agents.script_qc import composite, attach_intents
+    check("qc composite full marks = 100", composite({k: 10 for k in ("hook", "narrative", "ending", "comedy", "virality")}) == 100.0)
+    check("qc composite weights narrative highest",
+          composite({"narrative": 10}) > composite({"hook": 10}) > composite({"ending": 0, "comedy": 10}))
+    sc = [{"seq": 0}, {"seq": 1}]
+    attach_intents(sc, [{"seq": 1, "purpose": "reveal", "must_show": ["ledger"], "mood": "tense"}])
+    check("intents attach to the right scene", "intent" not in sc[0] and sc[1]["intent"]["must_show"] == ["ledger"])
+
 
 def main() -> int:
     unit_checks()

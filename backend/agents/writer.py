@@ -220,6 +220,27 @@ _SHOT_RULES = (
 )
 
 
+def _story_rules(n: int) -> str:
+    a1 = max(2, round(n * 0.2)); a2 = max(3, round(n * 0.4)); a3 = max(2, round(n * 0.25))
+    return (
+        f"STORY STRUCTURE (mandatory — a weak plot gets rejected by QC):\n"
+        f"- HOOK (scenes 1-2): a cold-open that grabs within the FIRST 5 SECONDS — a striking visual "
+        f"gag or the problem exploding on screen, plus a punchy line. No slow establishing openings.\n"
+        f"- ACT 1 (~{a1} scenes): setup + inciting incident — the scam/injustice hurts a real person "
+        f"we care about.\n"
+        f"- ACT 2 (~{a2} scenes): investigation + escalation — Jango works the case (observation, "
+        f"R.A.W. dogs, Champa's cats), Zruv makes it comically worse; stakes RISE every scene.\n"
+        f"- ACT 3 (~{a3} scenes): the jugaad plan + the TRAP — the resolution MECHANISM must be "
+        f"VISIBLE ON SCREEN: the audience must SEE exactly how the trick catches the villain (a "
+        f"specific scene where the plan clicks), never resolved by narration or off-screen.\n"
+        f"- PAYOFF (final scenes): public comeuppance, Zruv obliviously takes the credit, and the "
+        f"episode ENDS on Jango's sharp deadpan seekh — a quotable button, not an explanation.\n"
+        f"Every scene must ADVANCE the plot (cut anything that only decorates). Callbacks and "
+        f"running gags encouraged.\n"
+        f"DIALOGUE: every line MUST be under 80 characters (speakable in ~6s) — split longer "
+        f"thoughts across scenes.\n")
+
+
 def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None = None) -> WriterResult:
     """Expand an approved idea into a structured scene-by-scene script."""
     model = model or channel.writer_model or default_model()
@@ -234,6 +255,7 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         f"Title: {idea.get('title','')}\nLogline: {idea.get('logline','')}\n"
         f"Hook: {idea.get('hook','')}\n\n"
         f"Produce EXACTLY {n} scenes totalling ~{channel.target_duration_s}s. Cast character_ids: {cast_names}.\n"
+        + _story_rules(n)
         + _SHOT_RULES.format(budget=channel.video_budget) +
         "Write each scene like a film SHOT, not a summary, split into TWO fields:\n"
         "  - `frozen_beat`: the KEYFRAME — one STILL, STABLE instant, everything at rest or in a "
@@ -273,6 +295,40 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         scenes = _normalize_scenes(scenes, channel, cast_chars)
         return WriterResult(ok=True, data={"scenes": scenes}, model=model, usage=usage,
                             cost_usd=float(usage.get("cost", 0.0) or 0.0))
+    except Exception as e:  # noqa: BLE001
+        return WriterResult(ok=False, model=model, error=f"{type(e).__name__}: {str(e)[:200]}")
+
+
+def revise_script(channel, cast_chars: list, idea: dict[str, Any], scenes: list[dict],
+                  notes: list[str], *, model: str | None = None) -> WriterResult:
+    """Targeted revision: rewrite the script applying the QC judge's notes (keep what works)."""
+    model = model or channel.writer_model or default_model()
+    if not _key():
+        return WriterResult(ok=True, data={"scenes": scenes}, model="stub", stubbed=True)
+    import json as _json
+    n = len(scenes)
+    system = _channel_system(channel, cast_chars)
+    slim = [{k: s.get(k) for k in ("seq", "heading", "frozen_beat", "motion", "camera",
+                                   "cast_present", "dialogue", "narration", "shot_type",
+                                   "duration_s", "location_id", "time_jump", "beat_type")}
+            for s in scenes]
+    user = (
+        f"Here is the current draft script ({n} scenes) as JSON:\n{_json.dumps(slim, ensure_ascii=False)}\n\n"
+        "A story editor rejected it with these notes — fix ALL of them while keeping what already "
+        "works (do not rewrite scenes the notes don't touch unless required for causality):\n- "
+        + "\n- ".join(str(x) for x in notes[:8]) + "\n\n"
+        + _story_rules(n) + _SHOT_RULES.format(budget=channel.video_budget) +
+        f"Keep EXACTLY {n} scenes and the same JSON schema as the draft. Every `line` and "
+        f"`narration` in {getattr(channel, 'language', 'English')}.\n"
+        "Respond with ONLY JSON: {\"scenes\": [...]}")
+    try:
+        text, usage = _chat(system, user, model, temperature=0.6, max_tokens=10000)
+        data = _parse_json(text)
+        out = data.get("scenes") or []
+        if not isinstance(out, list) or not out:
+            raise ValueError("no scenes returned")
+        return WriterResult(ok=True, data={"scenes": _normalize_scenes(out, channel, cast_chars)},
+                            model=model, usage=usage, cost_usd=float(usage.get("cost", 0.0) or 0.0))
     except Exception as e:  # noqa: BLE001
         return WriterResult(ok=False, model=model, error=f"{type(e).__name__}: {str(e)[:200]}")
 

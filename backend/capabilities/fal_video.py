@@ -143,8 +143,12 @@ _VEO_LITE_RATE = {("720p", True): 0.05, ("720p", False): 0.03,
 
 
 def _veo_duration(duration_s: float) -> str:
-    """Veo accepts only 4s/6s/8s clips — snap to the nearest."""
-    return min(("4s", "6s", "8s"), key=lambda d: abs(int(d[:-1]) - float(duration_s)))
+    """Veo accepts only 4s/6s/8s clips — snap UP (never truncate below the asked duration; a spoken
+    line must fit, and silent clips are trimmed back to the scripted beat at assembly anyway)."""
+    for d in ("4s", "6s", "8s"):
+        if float(duration_s) <= int(d[:-1]):
+            return d
+    return "8s"
 
 
 def veo_lite_billed_cost(duration_s: float, resolution: str = "720p", audio: bool = True) -> float:
@@ -185,15 +189,30 @@ def generate_native_video(
     if image_url:
         payload["image_url"] = image_url
     start = time.time()
-    try:
-        data, request_id = _poll_fal(endpoint, payload, base=VEO_BASE)
-        _download(data["video"]["url"], Path(output_path))
-    except (requests.RequestException, GenerationError, KeyError) as e:
-        return GenResult(success=False, provider="fal-veo", model=endpoint,
-                         error=f"veo generation failed: {e}")
-    return GenResult(success=True, provider="fal-veo", model=endpoint, output_path=output_path,
-                     cost_usd=est, request_id=request_id,
-                     duration_seconds=round(time.time() - start, 2), raw=data)
+    # Resilience: transient transport errors retry with backoff (a one-off network hiccup used to
+    # kill a scene for good); a content-safety refusal retries ONCE with softened wording.
+    softened = False
+    last_err = ""
+    for attempt in range(4):
+        try:
+            data, request_id = _poll_fal(endpoint, payload, base=VEO_BASE)
+            _download(data["video"]["url"], Path(output_path))
+            return GenResult(success=True, provider="fal-veo", model=endpoint,
+                             output_path=output_path, cost_usd=est, request_id=request_id,
+                             duration_seconds=round(time.time() - start, 2), raw=data)
+        except (requests.RequestException, KeyError) as e:      # transport / malformed response
+            last_err = f"veo generation failed: {e}"
+            time.sleep(4 * (attempt + 1))
+        except GenerationError as e:                            # model-side failure
+            last_err = f"veo generation failed: {e}"
+            low = str(e).lower()
+            if not softened and any(k in low for k in ("safety", "content", "policy", "refus", "nsfw")):
+                payload["prompt"] = (prompt + " Keep it non-graphic, comedic and cartoon-safe: no "
+                                     "injury, blood, gore, or realistic harm; stylised slapstick only.")
+                softened = True
+                continue
+            time.sleep(4 * (attempt + 1))
+    return GenResult(success=False, provider="fal-veo", model=endpoint, error=last_err)
 
 
 def generate_video(

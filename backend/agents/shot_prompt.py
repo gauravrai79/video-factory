@@ -49,10 +49,14 @@ def reference_still_prompt(scene: dict, present: list[Character], channel: Chann
                   if setting else "Single consistent light source — every element shares the same "
                                   "lighting and rendering so nothing looks composited")
     frozen_line = f"Frozen beat (stable, at rest): {frozen}" if frozen else ""
+    intent = scene.get("intent") or {}
+    must = "; ".join(intent.get("must_show") or [])
+    intent_line = f"The frame MUST clearly show: {must}" if must else ""
+    mood_line = f"Mood: {intent['mood']}" if intent.get("mood") else ""
     compo = f"Composition: {camera}. One continuous ground plane — all characters and props share the same floor" \
         if camera else "One continuous ground plane — all characters and props share the same floor"
     prompt = ". ".join(p for p in [f"Art style: {style}", world_line, heading, subject,
-                                   frozen_line, compo, _FOOTER_STILL] if p)
+                                   frozen_line, intent_line, mood_line, compo, _FOOTER_STILL] if p)
     refs = [p for c in present for p in c.reference_images]
     return prompt, refs
 
@@ -80,6 +84,9 @@ def veo_prompt(scene: dict, present: list[Character], channel: Channel) -> str:
              "scene's art style locked"]
     if motion:
         parts.append(f"Action: {motion}")
+    must = "; ".join((scene.get("intent") or {}).get("must_show") or [])
+    if must:
+        parts.append(f"The shot must clearly show: {must}")
     if scene.get("camera"):
         parts.append(f"Camera: {scene['camera']}")
     dlg = next((d for d in (scene.get("dialogue") or [])

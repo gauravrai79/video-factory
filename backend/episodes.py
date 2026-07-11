@@ -89,6 +89,7 @@ class Episode:
     cast: list[str] = field(default_factory=list)           # resolved character_ids
     scenes: list[dict[str, Any]] = field(default_factory=list)  # list of Scene dicts
     style_note: str = ""                                    # applied to every scene's still prompt
+    script_qc: dict[str, Any] = field(default_factory=dict)  # judge scorecard {score, breakdown, notes, iterations, passed}
     refs_batch_done: bool = False                           # preview approved -> full batch generated
     timeline: dict[str, Any] = field(default_factory=dict)  # the editable EDL (built at assembly)
     history: list[dict[str, Any]] = field(default_factory=list)  # stage/gate action trail
@@ -157,11 +158,16 @@ class EpisodeStore:
         self.conn.commit()
         return ep
 
+    @staticmethod
+    def _load(data: str) -> Episode:
+        d = json.loads(data)
+        return Episode(**{k: v for k, v in d.items() if k in Episode.__dataclass_fields__})
+
     def get(self, episode_id: str) -> Optional[Episode]:
         row = self.conn.execute(
             "SELECT data FROM episodes WHERE episode_id=?", (episode_id,)
         ).fetchone()
-        return Episode(**json.loads(row["data"])) if row else None
+        return self._load(row["data"]) if row else None
 
     def list(self, tenant_id: str, channel_id: str | None = None) -> list[Episode]:
         if channel_id:
@@ -173,7 +179,7 @@ class EpisodeStore:
             rows = self.conn.execute(
                 "SELECT data FROM episodes WHERE tenant_id=? ORDER BY created_at DESC", (tenant_id,)
             ).fetchall()
-        return [Episode(**json.loads(r["data"])) for r in rows]
+        return [self._load(r["data"]) for r in rows]
 
     def update(self, ep: Episode) -> Episode:
         ep.updated_at = time.time()
