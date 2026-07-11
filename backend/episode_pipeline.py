@@ -120,8 +120,26 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
         cost += res.cost_usd
         if res.success:
             prompt = soft
+    qc = None
+    if res.success and not prompt_override:
+        # Gate 2 (vision QC): does the keyframe serve the scene's intent? One corrective retry.
+        from .agents import media_qc
+        names = [c.name for c in present]
+        v = media_qc.qc_still(path, scene, names)
+        cost += v.cost_usd
+        if v.ok and not v.passed:
+            fixed = prompt + media_qc.corrective_suffix(v.reasons)
+            res2 = _image_gen(prompt=fixed, output_path=path, reference_image_urls=refs or None,
+                              model=model, safety=safety)
+            cost += res2.cost_usd
+            if res2.success:
+                prompt = fixed
+                v2 = media_qc.qc_still(path, scene, names)
+                cost += v2.cost_usd
+                v = v2 if v2.ok else v
+        qc = v.as_dict() if v.ok else None
     info = {"path": path if res.success else "", "status": "ok" if res.success else "failed",
-            "prompt": prompt, "model": model, "error": res.error}
+            "prompt": prompt, "model": model, "error": res.error, "qc": qc}
     return info, cost
 
 
@@ -179,16 +197,37 @@ def _gen_scene_veo(scene: dict, cast_map: dict[str, Character], ch: Channel,
         prompt=prompt, image_url=image_ref(still),
         output_path=path, duration_s=dur, resolution=res_,
         generate_audio=True, aspect_ratio=("9:16" if ch.is_short() else "16:9"), execute=True)
+    cost = res.cost_usd
+    qc = None
+    if res.success and not (scene.get("veo_prompt_override") or "").strip():
+        # Gate 3 (vision QC): sampled frames vs the scene's intent. One corrective retry.
+        from .agents import media_qc
+        names = [c.name for c in present]
+        v = media_qc.qc_clip(path, scene, names)
+        cost += v.cost_usd
+        if v.ok and not v.passed:
+            fixed = prompt + media_qc.corrective_suffix(v.reasons)
+            res2 = fal_video.generate_native_video(
+                prompt=fixed, image_url=image_ref(still), output_path=path, duration_s=dur,
+                resolution=res_, generate_audio=True,
+                aspect_ratio=("9:16" if ch.is_short() else "16:9"), execute=True)
+            cost += res2.cost_usd
+            if res2.success:
+                res, prompt = res2, fixed
+                v2 = media_qc.qc_clip(path, scene, names)
+                cost += v2.cost_usd
+                v = v2 if v2.ok else v
+        qc = v.as_dict() if v.ok else None
     info = {"path": path if res.success else "", "status": "ok" if res.success else "failed",
             "prompt": prompt, "error": res.error, "has_audio": res.success,
-            "has_speech": bool(speech), "cost": res.cost_usd}
+            "has_speech": bool(speech), "cost": round(cost, 4), "qc": qc}
     if res.success:
         # Preserve the WRITER's duration (cut rhythm) before snapping to the actual clip length —
         # Veo rounds to 4/6/8s and assembly trims silent clips back to the scripted beat.
         if not scene.get("scripted_duration_s"):
             scene["scripted_duration_s"] = scene.get("duration_s", 6)
         scene["duration_s"] = round(media_duration(path) or scene.get("duration_s", 6), 2)
-    return info, res.cost_usd
+    return info, cost
 
 
 def _sarvam_on() -> bool:

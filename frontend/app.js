@@ -432,7 +432,9 @@ function refTile(e, s, gen, ro) {
   else if (ri.status === "failed") { state = "fail"; inner = `<div class="fail">${icon("x","icon")} failed</div>`; }
   else if (gen) { state = "working"; }
   const canReroll = (ok || ri.status === "failed") && !gen && !ro;
-  return `<div class="tile ${state}"><div class="thumb">${inner}</div>
+  const qc = ri.qc;
+  const qcBadge = qc && !qc.passed ? `<span class="qc-flag" title="${esc((qc.reasons || []).join(" · "))}">⚠ QC</span>` : "";
+  return `<div class="tile ${state}"><div class="thumb">${inner}${qcBadge}</div>
     <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
       ${canReroll ? `<button class="reroll-link" data-refedit="${s.seq}">${icon("edit","icon")} edit</button>` : ""}
       ${canReroll ? `<button class="reroll-link" data-reroll="${s.seq}">re-roll</button>` : ""}</div></div>`;
@@ -485,7 +487,9 @@ function sceneTile(e, s, gen, ro) {
   const working = gen && !okClip;
   const inner = s.still_url ? `<img src="${s.still_url}?t=${e.updated_at}"/>` : `<div class="spin-lg"></div>`;
   const clipTag = s.clip_url ? `<span class="clip-tag">${icon("play","icon")} clip</span>` : "";
-  const overlay = working ? `<div class="spin-lg" style="position:absolute"></div>` : (failed ? `<div class="fail">${icon("x","icon")} failed</div>` : "");
+  const qc = clip.qc;
+  const qcBadge = qc && !qc.passed ? `<span class="qc-flag" title="${esc((qc.reasons || []).join(" · "))}">⚠ QC</span>` : "";
+  const overlay = (working ? `<div class="spin-lg" style="position:absolute"></div>` : (failed ? `<div class="fail">${icon("x","icon")} failed</div>` : "")) + qcBadge;
   const check = (!ro && !gen) ? `<label class="tile-check" data-selscene="${s.seq}"><input type="checkbox" ${sel ? "checked" : ""} tabindex="-1"/></label>` : "";
   const open = (!ro && !gen) ? `data-scenegen="${s.seq}"` : "";
   return `<div class="tile ${okClip ? "done" : (working ? "working" : (failed ? "fail" : ""))}">
