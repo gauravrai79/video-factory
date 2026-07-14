@@ -46,10 +46,11 @@ def _save_image(url: str, output_path: Path) -> None:
 
 def generate_still(*, prompt: str, output_path: str, reference_image_urls: list[str] | None = None,
                    model: str = "gemini-flash", safety_tolerance: int = 5,
-                   execute: bool = True) -> GenResult:
+                   aspect_ratio: str = "16:9", execute: bool = True) -> GenResult:
     """Generate a character-consistent still via OpenRouter Gemini. Reference photos are passed as
-    input images so the same faces carry through. safety_tolerance is accepted for signature parity
-    (Gemini has its own safety; not a tunable param here)."""
+    input images so the same faces carry through. `aspect_ratio` (e.g. "9:16") is honored via Gemini's
+    image_config so portrait episodes render natively vertical. safety_tolerance is accepted for
+    signature parity (Gemini has its own safety; not a tunable param here)."""
     or_model = OR_IMAGE_MODELS.get(model, model)
     est = pricing.image_cost(model)
     if not execute or not _key():
@@ -65,6 +66,7 @@ def generate_still(*, prompt: str, output_path: str, reference_image_urls: list[
         "model": or_model,
         "messages": [{"role": "user", "content": content}],
         "modalities": ["image", "text"],
+        "image_config": {"aspect_ratio": aspect_ratio},   # native portrait/landscape (verified: honored)
         "usage": {"include": True},
     }
     headers = {"Authorization": f"Bearer {_key()}", "Content-Type": "application/json",

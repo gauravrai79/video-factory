@@ -47,9 +47,11 @@ def generate_still(
     reference_image_urls: list[str] | None = None,   # character "DNA" — kept consistent
     model: str = pricing.DEFAULT_IMAGE_MODEL,
     safety_tolerance: int = 5,
+    aspect_ratio: str = "16:9",
     execute: bool = False,
 ) -> GenResult:
-    """Generate one character-consistent still. execute=False returns a priced dry-run."""
+    """Generate one character-consistent still. execute=False returns a priced dry-run.
+    `aspect_ratio` (e.g. "9:16") is forwarded to models that support it (portrait/landscape)."""
     refs = list(reference_image_urls or [])
     model_path, supports_safety = _endpoint(model, bool(refs))
     est = pricing.image_cost(model)
@@ -63,7 +65,7 @@ def generate_still(
         return GenResult(success=True, provider="fal-image", model=f"fal-ai/{model_path}",
                          cost_usd=est, raw={"dry_run": True, "refs": len(refs)})
 
-    payload: dict[str, Any] = {"prompt": prompt, "num_images": 1}
+    payload: dict[str, Any] = {"prompt": prompt, "num_images": 1, "aspect_ratio": aspect_ratio}
     if refs:
         payload["image_urls"] = [image_ref(r) for r in refs]   # reference/edit conditioning
     if supports_safety:

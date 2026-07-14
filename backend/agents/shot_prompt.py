@@ -23,10 +23,12 @@ _FOOTER_STILL = ("Sharp focus, crisp linework, no motion blur. Consistent charac
                  "wardrobe. No on-screen text, captions, logos, or watermarks.")
 
 
-def reference_still_prompt(scene: dict, present: list[Character], channel: Channel) -> tuple[str, list[str]]:
+def reference_still_prompt(scene: dict, present: list[Character], channel: Channel,
+                           *, framing: str = "") -> tuple[str, list[str]]:
     """KEYFRAME prompt — a STILL, STABLE instant (all motion belongs to the video prompt). Style
     anchor -> setting + single light source (anti-compositing) -> subjects (canonical looks, restyled
-    from reference images) -> frozen beat -> composition/ground plane -> still footer."""
+    from reference images) -> frozen beat -> composition/ground plane -> still footer. `framing` is the
+    per-episode aspect composition hint (portrait vs landscape)."""
     from .writer import lint_keyframe
     style = channel.art_style or "cinematic, photorealistic"
     setting = (getattr(channel, "world", "") or "").strip()
@@ -56,7 +58,7 @@ def reference_still_prompt(scene: dict, present: list[Character], channel: Chann
     compo = f"Composition: {camera}. One continuous ground plane — all characters and props share the same floor" \
         if camera else "One continuous ground plane — all characters and props share the same floor"
     prompt = ". ".join(p for p in [f"Art style: {style}", world_line, heading, subject,
-                                   frozen_line, intent_line, mood_line, compo, _FOOTER_STILL] if p)
+                                   frozen_line, intent_line, mood_line, framing, compo, _FOOTER_STILL] if p)
     refs = [p for c in present for p in c.reference_images]
     return prompt, refs
 

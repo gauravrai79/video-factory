@@ -89,6 +89,23 @@ def unit_checks() -> None:
     attach_intents(sc, [{"seq": 1, "purpose": "reveal", "must_show": ["ledger"], "mood": "tense"}])
     check("intents attach to the right scene", "intent" not in sc[0] and sc[1]["intent"]["must_show"] == ["ledger"])
 
+    # format config: portrait vs landscape spec + aspect + scene-count derivation + presets
+    from backend import formats
+    from backend.episodes import Episode
+    class _C:                                          # minimal channel stand-in
+        target_duration_s = 120; target_scene_count = 0; language = "Hindi"
+        def is_short(self): return False
+    land = Episode(episode_id="x", channel_id="c", number=1, config={"layout": "landscape", "resolution": "1080p", "configured": True})
+    port = Episode(episode_id="y", channel_id="c", number=1, config={"layout": "portrait", "resolution": "720p", "configured": True})
+    ls, ps = formats.episode_spec(land, _C()), formats.episode_spec(port, _C())
+    check("landscape spec 1920x1080", (ls.width, ls.height) == (1920, 1080))
+    check("portrait spec 720x1280", (ps.width, ps.height) == (720, 1280))
+    check("veo aspect portrait 9:16", formats.veo_aspect("portrait") == "9:16" and formats.veo_aspect("landscape") == "16:9")
+    check("portrait framing hint is vertical", "9:16" in formats.framing_hint({"layout": "portrait"}))
+    check("scene count derived from length", formats.default_scene_count(120) == 20 and formats.default_scene_count(30) == 5)
+    check("presets include youtube + reel", {"youtube_long", "instagram_reel"} <= set(formats.PLATFORM_PRESETS))
+    check("config back-compat for un-configured episode", formats.episode_config(Episode(episode_id="z", channel_id="c", number=1), _C())["layout"] == "landscape")
+
 
 def main() -> int:
     unit_checks()
@@ -101,6 +118,12 @@ def main() -> int:
 
     ep = eps.create(tenant_id=TENANT, channel_id=ch.channel_id, title="__E2E_SMOKE__", cast=ch.cast_ids())
     try:
+        # --- SETUP (step 0: format config) ---
+        check("new episode starts at setup", ep.stage == "setup")
+        ep = pl.configure(store, ep, {"layout": "portrait", "duration_s": 60, "scene_count": 4,
+                                      "resolution": "720p", "music": True})
+        check("config saved + advanced to idea", ep.stage == "idea" and ep.config.get("layout") == "portrait")
+
         # --- SCRIPT (skip ideate which needs keys; seed an idea) ---
         ep.idea = {"title": "E2E", "logline": "smoke test", "hook": "x", "beats": ["a", "b"]}
         ep.stage = "script"; eps.update(ep)

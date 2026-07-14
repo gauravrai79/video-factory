@@ -43,8 +43,20 @@ def channel_spec(ch: Channel) -> OutputSpec:
     return get_spec("reel" if ch.is_short() else "landscape")
 
 
+def episode_spec(ep: Episode, ch: Channel) -> OutputSpec:
+    """The per-episode render spec from its Setup config (layout/resolution/length)."""
+    from . import formats
+    return formats.episode_spec(ep, ch)
+
+
 def _out_dir(ep: Episode) -> Path:
     return Path(os.environ.get("VF_OUT_DIR", "out")) / "episodes" / ep.episode_id
+
+
+def _episode_resolution(ep: Episode) -> str:
+    from . import formats
+    ch = ChannelStore(EpisodeStore().store).get(ep.channel_id) if ep.channel_id else None
+    return formats.episode_config(ep, ch)["resolution"]
 
 
 def stage_estimate(ep: Episode) -> float:
@@ -52,8 +64,7 @@ def stage_estimate(ep: Episode) -> float:
     if ep.stage == Stage.REFS.value:
         return round(len(ep.scenes) * pricing.image_cost(None), 4)
     if ep.stage == Stage.SCENES.value:
-        res = os.environ.get("VF_VIDEO_RESOLUTION", "720p")
-        res = res if res in ("720p", "1080p") else "720p"
+        res = _episode_resolution(ep)
         return round(sum(fal_video.veo_lite_billed_cost(s.get("duration_s", 6), res, audio=True)
                          for s in ep.scenes), 4)
     if ep.stage == Stage.AUDIO.value:                 # native audio is already in the clips; only music
@@ -84,22 +95,23 @@ def _cast_map(cs: CharacterStore, ids: list[str]) -> dict[str, Character]:
     return out
 
 
-def _image_gen(*, prompt: str, output_path: str, reference_image_urls, model: str, safety: int):
+def _image_gen(*, prompt: str, output_path: str, reference_image_urls, model: str, safety: int,
+               aspect_ratio: str = "16:9"):
     """Route to OpenRouter (Gemini) or fal based on the model. Same GenResult either way."""
     if model in pricing.OPENROUTER_IMAGE_MODELS:
         return or_image_cap.generate_still(prompt=prompt, output_path=output_path,
                                            reference_image_urls=reference_image_urls, model=model,
-                                           execute=True)
+                                           aspect_ratio=aspect_ratio, execute=True)
     return fal_image.generate_still(prompt=prompt, output_path=output_path,
                                     reference_image_urls=reference_image_urls, model=model,
-                                    safety_tolerance=safety, execute=True)
+                                    safety_tolerance=safety, aspect_ratio=aspect_ratio, execute=True)
 
 
 def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
-                     out_dir: Path, *, prompt_override: str | None = None,
-                     style_note: str = "", model: str | None = None) -> tuple[dict, float]:
+                     out_dir: Path, *, prompt_override: str | None = None, style_note: str = "",
+                     model: str | None = None, framing: str = "", aspect_ratio: str = "16:9") -> tuple[dict, float]:
     present = shot_prompt.scene_cast(scene, cast_map)
-    prompt, refs = shot_prompt.reference_still_prompt(scene, present, ch)
+    prompt, refs = shot_prompt.reference_still_prompt(scene, present, ch, framing=framing)
     if prompt_override:
         prompt = prompt_override
     if style_note:
@@ -108,7 +120,7 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
     path = str(out_dir / "stills" / f"{scene['seq']:03d}.png")
     model = model or pricing.default_image_model()
     res = _image_gen(prompt=prompt, output_path=path, reference_image_urls=refs or None,
-                     model=model, safety=safety)
+                     model=model, safety=safety, aspect_ratio=aspect_ratio)
     cost = res.cost_usd
     # Self-heal a content-filter refusal: retry ONCE with safety-softened wording so one graphic
     # beat doesn't block the whole batch (this was a real failure mode — a violent crash shot).
@@ -116,7 +128,7 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
         soft = (prompt + " Keep it non-graphic, comedic and cartoon-safe: no injury, blood, gore, "
                 "or realistic harm; stylised slapstick only.")
         res = _image_gen(prompt=soft, output_path=path, reference_image_urls=refs or None,
-                         model=model, safety=safety)
+                         model=model, safety=safety, aspect_ratio=aspect_ratio)
         cost += res.cost_usd
         if res.success:
             prompt = soft
@@ -130,7 +142,7 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
         if v.ok and not v.passed:
             fixed = prompt + media_qc.corrective_suffix(v.reasons)
             res2 = _image_gen(prompt=fixed, output_path=path, reference_image_urls=refs or None,
-                              model=model, safety=safety)
+                              model=model, safety=safety, aspect_ratio=aspect_ratio)
             cost += res2.cost_usd
             if res2.success:
                 prompt = fixed
@@ -176,19 +188,17 @@ def _speech_seconds(scene: dict) -> float:
 
 
 def _gen_scene_veo(scene: dict, cast_map: dict[str, Character], ch: Channel,
-                   out_dir: Path) -> tuple[dict, float]:
+                   out_dir: Path, *, aspect: str = "16:9", resolution: str = "720p") -> tuple[dict, float]:
     """Render ONE scene as a Veo 3.1 Lite clip: motion + native audio generated in a single pass from
     the scene's reference still. EVERY clip gets audio (dialogue+lip-sync when there's a line, ambient
     sound/SFX otherwise — dead-silent clips read as broken), and the clip duration is stretched to
-    FIT the spoken line so lip-sync isn't rushed."""
+    FIT the spoken line so lip-sync isn't rushed. Aspect + resolution come from the episode config."""
     present = shot_prompt.scene_cast(scene, cast_map)
     still = (scene.get("reference_image") or {}).get("path")
     if not still:
         return {"status": "failed", "error": "no reference image"}, 0.0
     speech = _scene_has_speech(scene)
-    res_ = os.environ.get("VF_VIDEO_RESOLUTION", "720p")
-    if res_ not in ("720p", "1080p"):
-        res_ = "720p"
+    res_ = resolution if resolution in ("720p", "1080p") else "720p"
     path = str(out_dir / "clips" / f"{scene['seq']:03d}.mp4")
     prompt = (scene.get("veo_prompt_override") or "").strip() or shot_prompt.veo_prompt(scene, present, ch)
     # duration must FIT the line (rushed lip-sync looks broken); writer caps lines at ~80 chars
@@ -196,7 +206,7 @@ def _gen_scene_veo(scene: dict, cast_map: dict[str, Character], ch: Channel,
     res = fal_video.generate_native_video(
         prompt=prompt, image_url=image_ref(still),
         output_path=path, duration_s=dur, resolution=res_,
-        generate_audio=True, aspect_ratio=("9:16" if ch.is_short() else "16:9"), execute=True)
+        generate_audio=True, aspect_ratio=aspect, execute=True)
     cost = res.cost_usd
     qc = None
     if res.success and not (scene.get("veo_prompt_override") or "").strip():
@@ -209,8 +219,7 @@ def _gen_scene_veo(scene: dict, cast_map: dict[str, Character], ch: Channel,
             fixed = prompt + media_qc.corrective_suffix(v.reasons)
             res2 = fal_video.generate_native_video(
                 prompt=fixed, image_url=image_ref(still), output_path=path, duration_s=dur,
-                resolution=res_, generate_audio=True,
-                aspect_ratio=("9:16" if ch.is_short() else "16:9"), execute=True)
+                resolution=res_, generate_audio=True, aspect_ratio=aspect, execute=True)
             cost += res2.cost_usd
             if res2.success:
                 res, prompt = res2, fixed
@@ -342,15 +351,16 @@ def _assemble_scenes_cut(ep: Episode, ch: Channel, *, music_path: str | None = N
     """Concatenate the Veo clips (each keeping its native audio) with transitions spliced per the
     cut-rhythm rules and any human seam overrides, an optional music bed, and loudnorm. This is THE
     stitch — it happens at ASSEMBLY, not at the scenes stage (scenes stay individual clips)."""
+    from . import formats, transitions
     kept = [s for s in ep.scenes if (s.get("clip") or {}).get("status") == "ok"]
     shots = [_shot_for_scene(s) for s in kept]
     if not shots:
         return False, "no scene clips to assemble"
-    from . import transitions
-    overrides = (ep.timeline or {}).get("seams") or {}
-    shots = transitions.interleave(shots, kept, ch, overrides=overrides)
+    if formats.episode_config(ep, ch).get("transitions") != "off":   # config can disable all transitions
+        overrides = (ep.timeline or {}).get("seams") or {}
+        shots = transitions.interleave(shots, kept, ch, overrides=overrides)
     out = str(_out_dir(ep) / out_name)
-    fr = assemble_scored(shots, out, spec=channel_spec(ch), music_path=music_path)
+    fr = assemble_scored(shots, out, spec=episode_spec(ep, ch), music_path=music_path)
     if fr.success:
         ep.timeline = {**(ep.timeline or {}), out_key: out, "silent": False, "probe": fr.probe}
     return fr.success, fr.error or ""
@@ -372,7 +382,7 @@ def _assemble_audio_cut(ep: Episode, ch: Channel, *, regen_music: bool = False,
             music_path = None
     shots = [_shot_for_scene(s) for s in ep.scenes]
     audio_cut = str(out_dir / "audio_cut.mp4")
-    fr = assemble_scored(shots, audio_cut, spec=channel_spec(ch), music_path=music_path)
+    fr = assemble_scored(shots, audio_cut, spec=episode_spec(ep, ch), music_path=music_path)
     if not fr.success:
         return False, fr.error or "assembly failed", cost
     ep.timeline = {**(ep.timeline or {}), "audio_cut": audio_cut, "music": music_path,
@@ -382,7 +392,7 @@ def _assemble_audio_cut(ep: Episode, ch: Channel, *, regen_music: bool = False,
 
 def _assemble_rough(ep: Episode, ch: Channel) -> tuple[bool, str]:
     """Assemble the silent rough cut: Ken Burns on stills, hero clips inline, crossfade transitions."""
-    spec = channel_spec(ch)
+    spec = episode_spec(ep, ch)
     medias: list[ShotMedia] = []
     for scene in ep.scenes:
         if scene.get("shot_type") == "hero_video" and (scene.get("clip") or {}).get("status") == "ok":
@@ -401,6 +411,27 @@ def _assemble_rough(ep: Episode, ch: Channel) -> tuple[bool, str]:
 
 
 # --------------------------------------------------------------------------- run (generate stage)
+
+def configure(store, ep: Episode, config: dict[str, Any]) -> Episode:
+    """Save the Setup-stage format config and advance to Idea. Validates + normalizes via
+    formats.episode_config so downstream stages always read a complete, valid config."""
+    from . import formats
+    eps, chs, cs, ch, cast = _ctx(store, ep)
+    incoming = dict(ep.config or {})
+    for k in ("platform", "layout", "duration_s", "scene_count", "resolution", "language",
+              "music", "music_hint", "transitions", "qc_threshold", "pacing", "cost_ceiling_usd"):
+        if k in (config or {}):
+            incoming[k] = config[k]
+    incoming["configured"] = True
+    ep.config = incoming
+    resolved = formats.episode_config(ep, ch)                 # normalize + fill defaults
+    ep.config = {**resolved, **{k: v for k, v in incoming.items() if v is not None}}
+    if ep.stage == Stage.SETUP.value:                         # first time -> open the pipeline
+        ep.stage = Stage.IDEA.value
+        ep.stage_status = StageStatus.PENDING.value
+    ep.log("configured", {"config": ep.config})
+    return eps.update(ep)
+
 
 def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str | None = None) -> Episode:
     """Generate the current stage's artifact and park at awaiting_review. `brief` steers ideation;
@@ -430,15 +461,17 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
     elif stage == Stage.SCRIPT:
         if not ep.idea:
             return _fail(eps, ep, "approve an idea before scripting")
+        from . import formats
         from .agents import script_qc
-        res = writer.script(ch, cast, ep.idea, model=ep.writer_model)
+        cfg = formats.episode_config(ep, ch)
+        res = writer.script(ch, cast, ep.idea, model=ep.writer_model, cfg=cfg)
         if not res.ok:
             return _fail(eps, ep, res.error or "scripting failed")
         _bill(ep, res)
         # QC gate: judge -> (below threshold) targeted revision with the judge's notes -> re-judge,
         # up to MAX_ITERATIONS writer passes. The best-scoring version parks at the human gate with
         # its scorecard either way — the gate informs the human, it never blocks them.
-        thr = script_qc.threshold(ch)
+        thr = float(cfg.get("qc_threshold") or script_qc.threshold(ch))
         best_scenes, best_qc = res.data["scenes"], None
         scenes = res.data["scenes"]
         for it in range(1, script_qc.MAX_ITERATIONS + 1):
@@ -477,11 +510,14 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
         # PREVIEW-FIRST: generate one representative still so you can approve the LOOK (style +
         # character identity) before spending on the whole batch. Prefer the first scene that
         # actually features the cast (so you see the character, not an empty establishing shot).
+        from . import formats
         cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
         out_dir = _out_dir(ep)
+        framing = formats.framing_hint(formats.episode_config(ep, ch))
         pidx = next((i for i, s in enumerate(ep.scenes) if s.get("cast_present")), 0)
         preview = ep.scenes[pidx]
-        info, cost = _gen_scene_still(preview, cast_map, ch, out_dir, style_note=ep.style_note)
+        info, cost = _gen_scene_still(preview, cast_map, ch, out_dir, style_note=ep.style_note,
+                                      framing=framing, aspect_ratio=formats.veo_aspect(formats.episode_config(ep, ch)["layout"]))
         preview["reference_image"] = info
         for i, scene in enumerate(ep.scenes):     # a fresh preview invalidates any prior batch
             if i != pidx:
@@ -524,20 +560,24 @@ def reroll_scene(store, ep: Episode, *, seq: int, prompt_override: str | None = 
     """Regenerate one scene's asset for the current stage (per-asset re-roll at the gate). At the
     refs stage an optional prompt/model override lets you tweak the wording or try a different image
     model for a shot you don't like."""
+    from . import formats
     eps, chs, cs, ch, cast = _ctx(store, ep)
     scene = next((s for s in ep.scenes if s.get("seq") == seq), None)
     if not scene:
         raise StageError(f"scene {seq} not found")
+    cfg = formats.episode_config(ep, ch)
     cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
     out_dir = _out_dir(ep)
     if ep.stage == Stage.REFS.value:
         info, cost = _gen_scene_still(scene, cast_map, ch, out_dir, prompt_override=prompt_override,
-                                      style_note=ep.style_note, model=model)
+                                      style_note=ep.style_note, model=model,
+                                      framing=formats.framing_hint(cfg), aspect_ratio=formats.veo_aspect(cfg["layout"]))
         scene["reference_image"] = info
         ep.spent_usd = round(ep.spent_usd + cost, 4)
         ep.log("ref_reroll", {"seq": seq, "status": info["status"], "cost_usd": cost})
     elif ep.stage in (Stage.SCENES.value, Stage.AUDIO.value, Stage.ASSEMBLY.value):
-        info, cost = _gen_scene_veo(scene, cast_map, ch, out_dir)   # fresh Veo clip (voice+motion)
+        info, cost = _gen_scene_veo(scene, cast_map, ch, out_dir,
+                                    aspect=formats.veo_aspect(cfg["layout"]), resolution=cfg["resolution"])
         scene["clip"] = info
         ep.spent_usd = round(ep.spent_usd + cost, 4)
         ep.log("scene_reroll", {"seq": seq, "status": info["status"], "cost_usd": cost})
@@ -555,15 +595,18 @@ def generate_refs_batch(store, ep: Episode, *, style_note: str | None = None) ->
         raise StageError("generate a preview first")
     if style_note is not None:
         ep.style_note = style_note.strip()
+    from . import formats
     cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
     out_dir = _out_dir(ep)
+    framing = formats.framing_hint(formats.episode_config(ep, ch))
     pending = [s for s in ep.scenes if (s.get("reference_image") or {}).get("status") != "ok"]
     est = round(len(pending) * pricing.image_cost(pricing.default_image_model()), 4)
     if est > episode_ceiling_usd():
         raise StageError(f"batch est ${est} over episode ceiling ${episode_ceiling_usd()}")
     spent, failed = 0.0, 0
     for scene in pending:
-        info, cost = _gen_scene_still(scene, cast_map, ch, out_dir, style_note=ep.style_note)
+        info, cost = _gen_scene_still(scene, cast_map, ch, out_dir, style_note=ep.style_note,
+                                      framing=framing, aspect_ratio=formats.veo_aspect(formats.episode_config(ep, ch)["layout"]))
         scene["reference_image"] = info
         spent += cost
         failed += (info["status"] != "ok")
@@ -580,14 +623,16 @@ def generate_scenes(store, ep: Episode, *, seqs: list[int] | None = None) -> Epi
     seqs=None -> generate every scene still missing a clip (idempotent, no re-charge). seqs=[...] ->
     (re)generate exactly those scenes (the per-scene / selected-batch path, forced even if a clip
     already exists, since the user picked them). Persists per clip for the live grid."""
+    from . import formats
     eps, chs, cs, ch, cast = _ctx(store, ep)
     if not ep.scenes or not all((s.get("reference_image") or {}).get("status") == "ok" for s in ep.scenes):
         return _fail(eps, ep, "generate + approve reference images first")
+    cfg = formats.episode_config(ep, ch)
+    aspect, resolution = formats.veo_aspect(cfg["layout"]), cfg["resolution"]
     want = set(seqs) if seqs is not None else None
     est = stage_estimate(ep) if want is None else round(sum(
-        fal_video.veo_lite_billed_cost(s.get("duration_s", 6),
-            os.environ.get("VF_VIDEO_RESOLUTION", "720p") if os.environ.get("VF_VIDEO_RESOLUTION") in ("720p", "1080p") else "720p",
-            audio=True) for s in ep.scenes if s.get("seq") in want), 4)
+        fal_video.veo_lite_billed_cost(s.get("duration_s", 6), resolution, audio=True)
+        for s in ep.scenes if s.get("seq") in want), 4)
     if est > episode_ceiling_usd():
         return _fail(eps, ep, f"est ${est} over episode ceiling ${episode_ceiling_usd()}")
     cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
@@ -599,7 +644,7 @@ def generate_scenes(store, ep: Episode, *, seqs: list[int] | None = None) -> Epi
         cl = scene.get("clip") or {}
         if want is None and cl.get("status") == "ok" and Path(cl.get("path", "")).is_file():
             continue                               # bulk run: skip already-done (idempotent, no re-charge)
-        info, cost = _gen_scene_veo(scene, cast_map, ch, out_dir)
+        info, cost = _gen_scene_veo(scene, cast_map, ch, out_dir, aspect=aspect, resolution=resolution)
         scene["clip"] = info
         spent += cost
         failed += (info["status"] != "ok")

@@ -342,6 +342,27 @@ def update_channel(channel_id: str, body: dict[str, Any]) -> dict[str, Any]:
     return _channel_view(ch, cs)
 
 
+@app.delete("/api/channels/{channel_id}")
+def delete_channel(channel_id: str) -> dict[str, Any]:
+    """Delete a channel and everything under it: its episodes (+ their media) and channel-level media
+    (transitions). Characters are shared across channels, so they are NOT deleted."""
+    import shutil
+    store = JobStore()
+    ch_store, ep_store = ChannelStore(store), EpisodeStore(store)
+    ch = ch_store.get(channel_id)
+    if not ch:
+        raise HTTPException(404, "channel not found")
+    out = Path(os.environ.get("VF_OUT_DIR", "out"))
+    eps = ep_store.list(_tenant(), channel_id=channel_id)
+    for ep in eps:
+        ep_store.delete(ep.episode_id)
+        shutil.rmtree(out / "episodes" / ep.episode_id, ignore_errors=True)
+    shutil.rmtree(out / "channels" / channel_id, ignore_errors=True)
+    store.conn.execute("DELETE FROM channels WHERE channel_id=?", (channel_id,))
+    store.conn.commit()
+    return {"deleted": channel_id, "episodes_deleted": len(eps)}
+
+
 # --------------------------------------------------------------------------- transition library
 
 @app.post("/api/channels/{channel_id}/transitions")
@@ -386,11 +407,17 @@ def transition_media(channel_id: str, tid: str):
 
 # --------------------------------------------------------------------------- episodes
 
-def _episode_view(ep, channel_name: str = "") -> dict[str, Any]:
+def _episode_view(ep, channel_name: str = "", ch=None) -> dict[str, Any]:
+    from . import formats
     d = ep.as_dict()
     d["channel_name"] = channel_name
     d["stage_index"] = [s.value for s in STAGE_ORDER].index(ep.stage) if ep.stage in [s.value for s in STAGE_ORDER] else 0
     d["stages"] = [s.value for s in STAGE_ORDER]
+    # Effective format config + Setup-stage options (presets, suggested scene count).
+    d["config"] = formats.episode_config(ep, ch)
+    d["config_saved"] = bool((ep.config or {}).get("configured"))
+    d["platform_presets"] = [{"id": k, **v} for k, v in formats.PLATFORM_PRESETS.items()]
+    d["scene_count_suggested"] = formats.default_scene_count(d["config"]["duration_s"])
     d["scene_count"] = len(ep.scenes)
     d["stage_estimate_usd"] = episode_pipeline.stage_estimate(ep)
     d["image_unit_cost"] = round(pricing.image_cost(), 4)
@@ -431,7 +458,7 @@ def _episode_action(episode_id: str, fn) -> dict[str, Any]:
     except StageError as e:
         raise HTTPException(409, str(e))
     ch = ch_store.get(ep.channel_id)
-    return _episode_view(ep, ch.name if ch else "")
+    return _episode_view(ep, ch.name if ch else "", ch)
 
 
 @app.get("/api/episodes")
@@ -440,7 +467,8 @@ def list_episodes(channel_id: str | None = None) -> list[dict[str, Any]]:
     ep_store, ch_store = EpisodeStore(store), ChannelStore(store)
     names = {c.channel_id: c.name for c in ch_store.list(_tenant())}
     eps = ep_store.list(_tenant(), channel_id=channel_id)
-    return [_episode_view(e, names.get(e.channel_id, "")) for e in eps]
+    chmap = {c.channel_id: c for c in ch_store.list(_tenant())}
+    return [_episode_view(e, names.get(e.channel_id, ""), chmap.get(e.channel_id)) for e in eps]
 
 
 @app.post("/api/episodes")
@@ -454,7 +482,7 @@ def create_episode(body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(404, "channel not found (pass channel_id)")
     ep = ep_store.create(tenant_id=_tenant(), channel_id=channel_id,
                          title=(body.get("title") or "").strip(), cast=ch.cast_ids())
-    return _episode_view(ep, ch.name)
+    return _episode_view(ep, ch.name, ch)
 
 
 @app.get("/api/episodes/{episode_id}")
@@ -465,7 +493,14 @@ def get_episode(episode_id: str) -> dict[str, Any]:
     if not ep:
         raise HTTPException(404, "episode not found")
     ch = ch_store.get(ep.channel_id)
-    return _episode_view(ep, ch.name if ch else "")
+    return _episode_view(ep, ch.name if ch else "", ch)
+
+
+@app.post("/api/episodes/{episode_id}/config")
+def configure_episode(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Save the Setup-stage format config (layout/length/resolution/language/music/QC/…) and, on
+    first save, advance from Setup to Idea."""
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.configure(s, e, body or {}))
 
 
 @app.delete("/api/episodes/{episode_id}")

@@ -220,12 +220,18 @@ _SHOT_RULES = (
 )
 
 
-def _story_rules(n: int) -> str:
+def _story_rules(n: int, *, hook_s: int = 5, pacing: str = "balanced", duration_s: int = 120) -> str:
     a1 = max(2, round(n * 0.2)); a2 = max(3, round(n * 0.4)); a3 = max(2, round(n * 0.25))
+    pace = {"dialogue": "Lean on character dialogue and reactions; fewer big action set-pieces.",
+            "action": "Lean on visual gags, motion and physical comedy; keep talking terse.",
+            "balanced": "Balance dialogue beats with visual action."}.get(pacing, "")
+    hookline = (f"- HOOK (scene 1): grab within the FIRST {hook_s} SECONDS — open ON the gag/problem, "
+                f"no establishing ramp. " + ("For a short vertical video the very first frame must be "
+                "arresting and the payoff must land fast.\n" if hook_s <= 2 else "\n"))
     return (
-        f"STORY STRUCTURE (mandatory — a weak plot gets rejected by QC):\n"
-        f"- HOOK (scenes 1-2): a cold-open that grabs within the FIRST 5 SECONDS — a striking visual "
-        f"gag or the problem exploding on screen, plus a punchy line. No slow establishing openings.\n"
+        f"STORY STRUCTURE (mandatory — a weak plot gets rejected by QC). Total ~{duration_s}s across "
+        f"{n} scenes. {pace}\n"
+        + hookline +
         f"- ACT 1 (~{a1} scenes): setup + inciting incident — the scam/injustice hurts a real person "
         f"we care about.\n"
         f"- ACT 2 (~{a2} scenes): investigation + escalation — Jango works the case (observation, "
@@ -241,10 +247,18 @@ def _story_rules(n: int) -> str:
         f"thoughts across scenes.\n")
 
 
-def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None = None) -> WriterResult:
-    """Expand an approved idea into a structured scene-by-scene script."""
+def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None = None,
+           cfg: dict[str, Any] | None = None) -> WriterResult:
+    """Expand an approved idea into a structured scene-by-scene script. `cfg` (the episode Setup
+    config) overrides channel defaults for THIS video: scene_count, duration, language, pacing,
+    hook timing (portrait shorts hook faster)."""
+    cfg = cfg or {}
     model = model or channel.writer_model or default_model()
-    n = int(channel.target_scene_count or (3 if channel.is_short() else 16))
+    n = int(cfg.get("scene_count") or channel.target_scene_count or (3 if channel.is_short() else 16))
+    duration = int(cfg.get("duration_s") or channel.target_duration_s or 120)
+    language = cfg.get("language") or getattr(channel, "language", "English")
+    hook_s = 2 if cfg.get("layout") == "portrait" else 5
+    pacing = cfg.get("pacing") or "balanced"
     if not _key():
         return _stub_script(channel, cast_chars, idea, n)
 
@@ -254,8 +268,8 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         f"Write the full script for this episode:\n"
         f"Title: {idea.get('title','')}\nLogline: {idea.get('logline','')}\n"
         f"Hook: {idea.get('hook','')}\n\n"
-        f"Produce EXACTLY {n} scenes totalling ~{channel.target_duration_s}s. Cast character_ids: {cast_names}.\n"
-        + _story_rules(n)
+        f"Produce EXACTLY {n} scenes totalling ~{duration}s. Cast character_ids: {cast_names}.\n"
+        + _story_rules(n, hook_s=hook_s, pacing=pacing, duration_s=duration)
         + _SHOT_RULES.format(budget=channel.video_budget) +
         "Write each scene like a film SHOT, not a summary, split into TWO fields:\n"
         "  - `frozen_beat`: the KEYFRAME — one STILL, STABLE instant, everything at rest or in a "
@@ -279,7 +293,7 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         "cast_present (character_ids on screen — EVERY character visible in the shot), dialogue "
         "(list of {speaker, line, delivery}), narration (VO text, may be empty), shot_type, "
         "duration_s, location_id, time_jump, beat_type.\n"
-        f"Every `line` and `narration` value MUST be written in {getattr(channel, 'language', 'English')}.\n"
+        f"Every `line` and `narration` value MUST be written in {language}.\n"
         "Respond with ONLY JSON, no prose:\n"
         '{"scenes": [{"heading": "...", "frozen_beat": "...", "motion": "...", "camera": "...", '
         '"cast_present": ["id"], "dialogue": [{"speaker": "id", "line": "...", "delivery": "..."}], '

@@ -255,7 +255,7 @@ function viewSettings() {
 }
 
 /* ---------------- episode workspace ---------------- */
-const STAGES = [["idea", "Idea"], ["script", "Script"], ["refs", "Refs"], ["scenes", "Scenes"], ["audio", "Audio"], ["assembly", "Assembly"], ["done", "Done"]];
+const STAGES = [["setup", "Setup"], ["idea", "Idea"], ["script", "Script"], ["refs", "Refs"], ["scenes", "Scenes"], ["audio", "Audio"], ["assembly", "Assembly"], ["done", "Done"]];
 function viewWorkspace() {
   const e = S.ep; if (!e) return `<p class="muted">Episode not found.</p>`;
   const idx = STAGES.findIndex(([k]) => k === e.stage);
@@ -283,6 +283,7 @@ function renderStage(e, stage, readOnly) {
   const errBar = (!readOnly && e.stage_error) ? `<div class="err-banner">${icon("x", "icon")} ${esc(e.stage_error)}</div>` : "";
   const gen = !readOnly && e.generating;
   switch (stage) {
+    case "setup": return errBar + stageSetup(e, gen, readOnly);
     case "idea": return errBar + stageIdea(e, gen, readOnly);
     case "script": return errBar + stageScript(e, gen, readOnly);
     case "refs": return errBar + stageRefs(e, gen, readOnly);
@@ -292,6 +293,67 @@ function renderStage(e, stage, readOnly) {
     case "done": return stageDone(e);
     default: return "";
   }
+}
+
+/* --- Setup (step 0: format config) --- */
+function setupSuggestScenes(dur) { return Math.max(3, Math.min(30, Math.round((+dur || 60) / 6))); }
+function setupCost(n, res, music) { const ps = res === "1080p" ? 0.08 : 0.05; return n * 6 * ps + n * 0.04 + (music ? 0.03 : 0); }
+function setupEstHtml(n, res, music) {
+  return `Estimated generation cost: <b>~$${setupCost(n, res, music).toFixed(2)}</b> <span class="muted">· ${n} scenes · ${res} · ${music ? "music" : "no music"}</span>`;
+}
+function updateSetupEst() {
+  const n = +($("#cfg-scenes").value || 0), res = $("#cfg-res").value, music = $("#cfg-music").checked, dur = +($("#cfg-duration").value || 0);
+  const sug = $("#cfg-scene-sugg"); if (sug) sug.textContent = `≈${setupSuggestScenes(dur)} for ${dur || 0}s`;
+  const est = $("#cfg-est"); if (est) est.innerHTML = setupEstHtml(n, res, music);
+}
+function setLayout(v) {
+  $("#cfg-layout").value = v;
+  document.querySelectorAll('[data-setupseg="layout"]').forEach((b) => b.classList.toggle("on", b.dataset.val === v));
+}
+function applyPreset(id) {
+  const p = (S.ep.platform_presets || []).find((x) => x.id === id); if (!p) return;
+  S.setupPreset = id;
+  if (p.layout) setLayout(p.layout);
+  if (p.duration_s) { $("#cfg-duration").value = p.duration_s; $("#cfg-scenes").value = setupSuggestScenes(p.duration_s); }
+  if (p.resolution) $("#cfg-res").value = p.resolution;
+  if (p.qc_threshold) $("#cfg-qc").value = String(p.qc_threshold);
+  if (p.pacing) $("#cfg-pacing").value = p.pacing;
+  if (typeof p.music === "boolean") $("#cfg-music").checked = p.music;
+  if (p.transitions) $("#cfg-trans").checked = p.transitions !== "off";
+  document.querySelectorAll(".preset-btn").forEach((b) => b.classList.toggle("on", b.dataset.preset === id));
+  updateSetupEst();
+}
+function stageSetup(e, gen, ro) {
+  const c = e.config || {};
+  S.setupPreset = c.platform;
+  const presets = (e.platform_presets || []).filter((p) => p.id !== "custom");
+  const seg = (id, val, opts) => opts.map(([v, l]) => `<button type="button" class="seg-btn ${val === v ? "on" : ""}" data-setupseg="${id}" data-val="${v}" onclick="setLayout('${v}')">${l}</button>`).join("");
+  const configured = e.config_saved && e.stage !== "setup";
+  const warn = (e.config_saved && ["refs", "scenes", "audio", "assembly", "done"].includes(e.stage))
+    ? `<p class="hint">${icon("x","icon")} Changing layout or resolution won't retro-change stills/clips already generated — re-roll those to apply the new format.</p>` : "";
+  const opt = (v, l, cur) => `<option value="${v}" ${String(cur) === String(v) ? "selected" : ""}>${l}</option>`;
+  return `<p class="stage-intro">Set the format for <b>this episode</b> — everything downstream (script length, framing, render) follows from here. Defaults come from the channel; a preset stamps a platform in one click.</p>
+    <div class="cfg-presets">${presets.map((p) => `<button type="button" class="preset-btn" data-preset="${p.id}" onclick="applyPreset('${p.id}')">${icon("film","icon")} ${esc(p.label)}</button>`).join("")}</div>
+    <div class="cfg-form">
+      <div class="field"><label>Layout</label><div class="seg">${seg("layout", c.layout, [["landscape", "▭ Landscape 16:9"], ["portrait", "▮ Portrait 9:16"]])}</div><input type="hidden" id="cfg-layout" value="${c.layout}"/></div>
+      <div class="row-3">
+        <div class="field"><label>Length (seconds)</label><input type="number" id="cfg-duration" value="${c.duration_s}" min="8" max="600" oninput="updateSetupEst()"/></div>
+        <div class="field"><label>Scenes <small class="muted" id="cfg-scene-sugg">≈${setupSuggestScenes(c.duration_s)} for ${c.duration_s}s</small></label><input type="number" id="cfg-scenes" value="${c.scene_count}" min="3" max="30" oninput="updateSetupEst()"/></div>
+        <div class="field"><label>Resolution</label><select id="cfg-res" onchange="updateSetupEst()">${opt("720p", "720p (cheaper)", c.resolution)}${opt("1080p", "1080p (×1.6 cost)", c.resolution)}</select></div>
+      </div>
+      <div class="row-3">
+        <div class="field"><label>Language</label><input id="cfg-lang" value="${esc(c.language || "")}"/></div>
+        <div class="field"><label>Pacing</label><select id="cfg-pacing">${opt("dialogue", "Dialogue-heavy", c.pacing)}${opt("balanced", "Balanced", c.pacing)}${opt("action", "Action-heavy", c.pacing)}</select></div>
+        <div class="field"><label>Script QC bar</label><select id="cfg-qc">${opt("60", "Lax (60)", c.qc_threshold)}${opt("75", "Default (75)", c.qc_threshold)}${opt("85", "Strict (85)", c.qc_threshold)}</select></div>
+      </div>
+      <div class="row-2" style="margin:4px 0 6px">
+        <label class="chk"><input type="checkbox" id="cfg-music" ${c.music ? "checked" : ""} onchange="updateSetupEst()"/> Background music bed</label>
+        <label class="chk"><input type="checkbox" id="cfg-trans" ${c.transitions !== "off" ? "checked" : ""}/> Auto transitions at scene cuts</label>
+      </div>
+      ${warn}
+      <div class="cfg-est" id="cfg-est">${setupEstHtml(c.scene_count, c.resolution, c.music)}</div>
+      <button class="btn btn-primary" data-saveconfig>${icon("check")} ${configured ? "Update setup" : "Save & start ideas"}</button>
+    </div>`;
 }
 
 /* --- Idea --- */
@@ -601,7 +663,7 @@ async function epAct(fn, optimisticGen) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans],[data-scenegen],[data-selscene],[data-selall],[data-genselected],[data-genremaining],[data-skipmusic],[data-saveseams]");
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans],[data-scenegen],[data-selscene],[data-selall],[data-genselected],[data-genremaining],[data-skipmusic],[data-saveseams],[data-saveconfig],[data-delchannel]");
   // close dropdown on outside click
   if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
   if (!t) return;
@@ -611,6 +673,7 @@ document.addEventListener("click", async (ev) => {
   if (d.selchan) { S.ddOpen = false; S.channelId = d.selchan; return go(`c/${d.selchan}/overview`); }
   if (d.newchannel !== undefined) return modalChannel();
   if (d.editchannel) return modalChannel(S.channels.find((c) => c.channel_id === d.editchannel));
+  if (d.delchannel !== undefined) return delChannel(d.delchannel);
   if (d.newchar !== undefined) return modalCharacter();
   if (d.editchar) return modalCharacter(charById(d.editchar));
   if (d.uploadref) return uploadRef(d.uploadref);
@@ -648,6 +711,13 @@ document.addEventListener("click", async (ev) => {
     const seqs = [...(S.sceneSel || [])]; if (!seqs.length) return;
     if (!confirm(`Generate ${seqs.length} scene(s) (~$${(seqs.length * SCENE_UNIT).toFixed(2)})?`)) return;
     return epAct(async () => { const r = await jpost(`/api/episodes/${S.ep.episode_id}/scenes/generate`, { seqs }); S.sceneSel = new Set(); return r; }, true);
+  }
+  if (d.saveconfig !== undefined) {
+    const body = { platform: S.setupPreset, layout: $("#cfg-layout").value, duration_s: +$("#cfg-duration").value,
+      scene_count: +$("#cfg-scenes").value, resolution: $("#cfg-res").value, language: $("#cfg-lang").value.trim(),
+      pacing: $("#cfg-pacing").value, qc_threshold: +$("#cfg-qc").value, music: $("#cfg-music").checked,
+      transitions: $("#cfg-trans").checked ? "auto" : "off" };
+    return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/config`, body));
   }
   if (d.skipmusic !== undefined) return epAct(() => jpost(`/api/episodes/${S.ep.episode_id}/approve`, { skip_music: true }));
   if (d.saveseams !== undefined) {
@@ -689,6 +759,20 @@ async function delEpisode(id) {
   catch (err) { toast(err.message, "err"); }
 }
 async function reloadEpisodes() { S.episodes = await jget(`/api/episodes?channel_id=${S.channelId}`); }
+async function delChannel(id) {
+  const ch = (S.channels || []).find((c) => c.channel_id === id) || {};
+  const eps = await jget(`/api/episodes?channel_id=${id}`).catch(() => []);
+  const typed = prompt(`This deletes "${ch.name}" and ${eps.length} episode(s) with all their media. Characters are kept.\n\nType the channel name to confirm:`);
+  if (typed == null) return;
+  if (typed.trim() !== (ch.name || "").trim()) { toast("Name didn't match — not deleted", "err"); return; }
+  try {
+    await jdel(`/api/channels/${id}`);
+    $("#modal-root").innerHTML = "";
+    await loadCore();
+    if (S.channelId === id) { S.channelId = (S.channels[0] || {}).channel_id || null; location.hash = S.channelId ? `c/${S.channelId}/overview` : ""; }
+    toast("Channel deleted"); render();
+  } catch (err) { toast(err.message, "err"); }
+}
 
 /* file upload for character reference */
 let uploadTargetId = null;
@@ -727,7 +811,8 @@ function modalChannel(ch) {
       <div class="field"><label>Video budget</label><input type="number" id="f-budget" value="${c.video_budget ?? 3}"/></div></div>
     <div class="row-2"><div class="field"><label>Writer provider</label><input id="f-writer" value="${esc(c.writer_provider || "openrouter")}"/></div>
       <div class="field"><label>Narrator voice</label><input id="f-narr" value="${esc(c.narrator_voice_id || "")}" placeholder="e.g. Brian"/></div></div>
-    <div class="field"><label>Cast (first checked = lead)</label><div class="checks">${castChecks(sel)}</div></div>`,
+    <div class="field"><label>Cast (first checked = lead)</label><div class="checks">${castChecks(sel)}</div></div>
+    ${ch ? `<div class="danger-zone"><div><b>Delete channel</b><br><small class="muted">Removes this channel and all its episodes + media. Characters are kept.</small></div><button type="button" class="btn btn-danger" data-delchannel="${ch.channel_id}">${icon("trash","icon")} Delete</button></div>` : ""}`,
     async () => {
       const picked = [...document.querySelectorAll(".modal .checks input:checked")].map((i) => i.value);
       const cast = picked.map((id, i) => ({ character_id: id, role: i === 0 ? "lead" : "sidekick" }));

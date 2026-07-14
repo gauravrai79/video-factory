@@ -24,6 +24,7 @@ from .jobstore import JobStore
 
 
 class Stage(str, Enum):
+    SETUP = "setup"                     # step 0: format config (layout, length, resolution, …)
     IDEA = "idea"
     SCRIPT = "script"
     REFS = "refs"
@@ -41,7 +42,7 @@ class StageStatus(str, Enum):
     REJECTED = "rejected"               # sent back
 
 
-STAGE_ORDER = [Stage.IDEA, Stage.SCRIPT, Stage.REFS, Stage.SCENES, Stage.AUDIO,
+STAGE_ORDER = [Stage.SETUP, Stage.IDEA, Stage.SCRIPT, Stage.REFS, Stage.SCENES, Stage.AUDIO,
                Stage.ASSEMBLY, Stage.DONE]
 
 # Shot types the director assigns per scene — the long-form cost engine (cheap -> expensive).
@@ -81,8 +82,9 @@ class Episode:
     number: int
     title: str = ""
     logline: str = ""
-    stage: str = Stage.IDEA.value
+    stage: str = Stage.SETUP.value
     stage_status: str = StageStatus.PENDING.value
+    config: dict[str, Any] = field(default_factory=dict)    # Setup-stage format config (see formats.py)
     idea: dict[str, Any] = field(default_factory=dict)      # approved concept
     idea_brief: str = ""                                    # optional creator steer for ideation
     idea_candidates: list[dict[str, Any]] = field(default_factory=list)  # ideate output (choose one)
