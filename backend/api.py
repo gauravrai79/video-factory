@@ -288,6 +288,26 @@ def _channel_view(ch, cs: CharacterStore) -> dict[str, Any]:
     return d
 
 
+@app.get("/api/styles")
+def list_styles() -> dict[str, Any]:
+    """The art-style library for the channel-wizard visual picker (id, label, sample image, tags)."""
+    from .styles import ART_STYLES
+    return {"styles": [{"id": s["id"], "label": s["label"], "tags": s.get("tags", []),
+                        "prompt": s["prompt"], "sample_url": f"/assets/styles/{s['id']}.jpg"}
+                       for s in ART_STYLES]}
+
+
+@app.post("/api/assist/premise")
+def assist_premise(body: dict[str, Any]) -> dict[str, Any]:
+    """Draft a channel concept (name, tagline, premise, tone, suggested style ids) from a one-liner."""
+    from .agents import concept
+    res = concept.draft_concept((body or {}).get("brief", ""),
+                                platform=(body or {}).get("platform", "youtube"))
+    if not res.ok:
+        raise HTTPException(502, res.error or "concept drafting failed")
+    return {**res.data, "stubbed": res.stubbed}
+
+
 @app.get("/api/channels")
 def list_channels() -> list[dict[str, Any]]:
     store = JobStore()
@@ -310,9 +330,12 @@ def create_channel(body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(409, f"channel slug '{slug}' already exists")
     fields = {k: v for k, v in body.items()
               if k in ("platform", "format", "premise", "cast", "narrator_voice_id", "art_style",
-                       "world", "language", "style_reference_images", "target_scene_count",
-                       "target_duration_s", "video_budget", "writer_provider", "writer_model",
-                       "posting_cadence")}
+                       "art_style_id", "tone", "tagline", "world", "language", "style_reference_images",
+                       "target_scene_count", "target_duration_s", "video_budget", "writer_provider",
+                       "writer_model", "posting_cadence")}
+    if fields.get("art_style_id") and not fields.get("art_style"):
+        from .styles import prompt_for
+        fields["art_style"] = prompt_for(fields["art_style_id"])
     ch = ch_store.create(tenant_id=_tenant(), name=name, slug=slug, **fields)
     return _channel_view(ch, cs)
 
@@ -333,9 +356,13 @@ def update_channel(channel_id: str, body: dict[str, Any]) -> dict[str, Any]:
     ch_store, cs = ChannelStore(store), CharacterStore(store)
     fields = {k: v for k, v in body.items()
               if k in ("name", "slug", "platform", "premise", "cast", "narrator_voice_id",
-                       "art_style", "world", "language", "style_reference_images", "target_scene_count",
-                       "target_duration_s", "video_budget", "writer_provider", "writer_model",
-                       "series_memory", "posting_cadence", "active")}
+                       "art_style", "art_style_id", "tone", "tagline", "world", "language",
+                       "style_reference_images", "target_scene_count", "target_duration_s",
+                       "video_budget", "writer_provider", "writer_model", "series_memory",
+                       "posting_cadence", "active")}
+    if fields.get("art_style_id"):
+        from .styles import prompt_for
+        fields["art_style"] = prompt_for(fields["art_style_id"])
     ch = ch_store.patch(channel_id, **fields)
     if not ch:
         raise HTTPException(404, "channel not found")

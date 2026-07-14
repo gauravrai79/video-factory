@@ -37,6 +37,9 @@ class Channel:
     cast: list[dict[str, str]] = field(default_factory=list)   # [{character_id, role}]
     narrator_voice_id: str = ""                 # channel-level narrator voice
     art_style: str = ""                         # e.g. "noir cinematic", "photoreal glamour"
+    art_style_id: str = ""                      # id from styles.ART_STYLES (blank = custom art_style)
+    tone: str = ""                              # comedy | thriller | wholesome | … (steers the writer)
+    tagline: str = ""                           # short show tagline
     world: str = ""                             # setting/location bible injected into EVERY visual prompt
     language: str = "English"                   # spoken language for dialogue + narration + VO
     style_reference_images: list[str] = field(default_factory=list)   # lock the look
@@ -109,23 +112,28 @@ class ChannelStore:
         self.conn.commit()
         return ch
 
+    @staticmethod
+    def _load(data: str) -> Channel:
+        d = json.loads(data)
+        return Channel(**{k: v for k, v in d.items() if k in Channel.__dataclass_fields__})
+
     def get(self, channel_id: str) -> Optional[Channel]:
         row = self.conn.execute(
             "SELECT data FROM channels WHERE channel_id=?", (channel_id,)
         ).fetchone()
-        return Channel(**json.loads(row["data"])) if row else None
+        return self._load(row["data"]) if row else None
 
     def get_by_slug(self, tenant_id: str, slug: str) -> Optional[Channel]:
         row = self.conn.execute(
             "SELECT data FROM channels WHERE tenant_id=? AND slug=?", (tenant_id, slug)
         ).fetchone()
-        return Channel(**json.loads(row["data"])) if row else None
+        return self._load(row["data"]) if row else None
 
     def list(self, tenant_id: str) -> list[Channel]:
         rows = self.conn.execute(
             "SELECT data FROM channels WHERE tenant_id=? ORDER BY created_at", (tenant_id,)
         ).fetchall()
-        return [Channel(**json.loads(r["data"])) for r in rows]
+        return [self._load(r["data"]) for r in rows]
 
     def update(self, ch: Channel) -> Channel:
         ch.updated_at = time.time()

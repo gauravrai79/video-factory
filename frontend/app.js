@@ -50,6 +50,7 @@ let pollTimer = null;
 async function loadCore() {
   const [summary, channels, characters] = await Promise.all([jget("/api/summary"), jget("/api/channels"), jget("/api/characters")]);
   S.summary = summary; S.channels = channels; S.characters = characters;
+  ensureStyles();   // warm the art-style library (non-blocking) for the wizard + edit picker
 }
 const channel = () => S.channels.find((c) => c.channel_id === S.channelId) || S.channels[0];
 const charById = (id) => S.characters.find((c) => c.character_id === id);
@@ -671,7 +672,7 @@ document.addEventListener("click", async (ev) => {
   if (d.nav !== undefined) return go(d.nav);
   if (d.dd !== undefined) { S.ddOpen = !S.ddOpen; return S.ddOpen ? renderDropdown() : ($(".dropdown") && $(".dropdown").remove()); }
   if (d.selchan) { S.ddOpen = false; S.channelId = d.selchan; return go(`c/${d.selchan}/overview`); }
-  if (d.newchannel !== undefined) return modalChannel();
+  if (d.newchannel !== undefined) return channelWizard();
   if (d.editchannel) return modalChannel(S.channels.find((c) => c.channel_id === d.editchannel));
   if (d.delchannel !== undefined) return delChannel(d.delchannel);
   if (d.newchar !== undefined) return modalCharacter();
@@ -797,6 +798,98 @@ function openModal(title, bodyHtml, onSave, saveLabel = "Save") {
 }
 const castChecks = (selected = []) => S.characters.map((c) => `<label><input type="checkbox" value="${c.character_id}" ${selected.includes(c.character_id) ? "checked" : ""}/> ${esc(c.name)}</label>`).join("") || `<span class="muted">Create characters first.</span>`;
 
+/* ---------------- New-channel wizard ---------------- */
+const PLATFORMS = [["youtube", "YouTube", "▭"], ["instagram", "Instagram", "▮"], ["tiktok", "TikTok", "♪"]];
+const TONES = ["comedy", "action-comedy", "thriller", "wholesome", "educational", "satire", "drama"];
+async function ensureStyles() { if (!S.styles) { try { S.styles = (await jget("/api/styles")).styles || []; } catch (e) { S.styles = []; } } }
+function styleById(id) { return (S.styles || []).find((s) => s.id === id); }
+
+async function channelWizard() {
+  await ensureStyles();
+  S.wiz = { step: 1, name: "", platform: "youtube", brief: "", tagline: "", premise: "", tone: "comedy", styleId: "", cast: [], voice: "", drafting: false };
+  renderWizard();
+}
+function wizSaveStep() {
+  const w = S.wiz;
+  if (w.step === 1) { w.brief = $("#wz-brief") ? $("#wz-brief").value : w.brief; w.name = $("#wz-name") ? $("#wz-name").value : w.name; }
+  if (w.step === 2) { ["name2:name", "tag:tagline", "prem:premise", "tone:tone"].forEach((m) => { const [id, k] = m.split(":"); const el = $("#wz-" + id); if (el) w[k] = el.value; }); }
+  if (w.step === 4) { const v = $("#wz-voice"); if (v) w.voice = v.value; w.cast = [...document.querySelectorAll(".wz-cast input:checked")].map((i) => i.value); }
+}
+function wizGo(step) { wizSaveStep(); S.wiz.step = step; renderWizard(); }
+function wizPlat(p) { S.wiz.platform = p; document.querySelectorAll("[data-wzplat]").forEach((b) => b.classList.toggle("on", b.dataset.wzplat === p)); }
+function wizPickStyle(id) { S.wiz.styleId = id; document.querySelectorAll(".style-tile").forEach((t) => t.classList.toggle("on", t.dataset.style === id)); }
+async function wizDraft() {
+  wizSaveStep();
+  if (!S.wiz.brief.trim()) { toast("Tell me what the show is about first", "err"); return; }
+  S.wiz.drafting = true; renderWizard();
+  try {
+    const d = await jpost("/api/assist/premise", { brief: S.wiz.brief, platform: S.wiz.platform });
+    S.wiz.name = S.wiz.name || d.name || ""; S.wiz.tagline = d.tagline || ""; S.wiz.premise = d.premise || "";
+    S.wiz.tone = d.tone || "comedy"; S.wiz.styleId = (d.style_ids || [])[0] || S.wiz.styleId;
+    if (d.stubbed) toast("Drafted (offline scaffold — add an API key for richer concepts)");
+  } catch (err) { toast(err.message, "err"); }
+  S.wiz.drafting = false; renderWizard();
+}
+async function wizCreate() {
+  wizSaveStep(); const w = S.wiz;
+  if (!w.name.trim()) { toast("Give the channel a name", "err"); return; }
+  const shortForm = w.platform !== "youtube";
+  const body = { name: w.name.trim(), platform: w.platform, format: shortForm ? "short_form" : "long_form",
+    premise: w.premise.trim(), tagline: w.tagline.trim(), tone: w.tone, art_style_id: w.styleId,
+    narrator_voice_id: w.voice.trim(),
+    cast: w.cast.map((id, i) => ({ character_id: id, role: i === 0 ? "lead" : "sidekick" })) };
+  try {
+    const nc = await jpost("/api/channels", body);
+    $("#modal-root").innerHTML = ""; S.wiz = null;
+    S.channelId = nc.channel_id; await loadCore(); await reloadEpisodes();
+    location.hash = `c/${nc.channel_id}/overview`; toast("Channel created ✨"); render();
+  } catch (err) { toast(err.message, "err"); }
+}
+function wizStepDots(step) {
+  return ["Idea", "Premise", "Style", "Cast"].map((l, i) => `<span class="wz-dot ${i + 1 === step ? "on" : i + 1 < step ? "done" : ""}">${i + 1 < step ? icon("check", "icon") : i + 1}</span><span class="wz-dot-l">${l}</span>`).join('<span class="wz-dot-sep"></span>');
+}
+function renderWizard() {
+  const w = S.wiz; if (!w) return;
+  let body = "", foot = "", title = "New channel";
+  if (w.step === 1) {
+    title = "What's the show?";
+    body = `<div class="field"><label>Platform</label><div class="plat-tiles">${PLATFORMS.map(([id, l, g]) => `<button type="button" class="plat-tile ${w.platform === id ? "on" : ""}" data-wzplat="${id}" onclick="wizPlat('${id}')"><span class="plat-g">${g}</span>${l}</button>`).join("")}</div></div>
+      <div class="field"><label>What's the show about? <small class="muted">one line is enough</small></label>
+        <textarea id="wz-brief" rows="3" placeholder="e.g. a detective dog in Mumbai who busts scams with clever jugaad">${esc(w.brief)}</textarea></div>
+      <div class="field"><label>Channel name <small class="muted">optional — the assistant can suggest one</small></label><input id="wz-name" value="${esc(w.name)}" placeholder="leave blank to auto-name"/></div>`;
+    foot = `<button class="btn btn-primary" onclick="wizGo(2)">Next: premise ${icon("arrow","icon")}</button>`;
+  } else if (w.step === 2) {
+    title = "Shape the premise";
+    body = `<div class="wz-assist"><button class="btn btn-primary" onclick="wizDraft()" ${w.drafting ? "disabled" : ""}>${w.drafting ? spin() : icon("sparkles","icon")} ${w.premise ? "Regenerate" : "Draft with AI"}</button>
+        <span class="muted">${w.drafting ? "Thinking…" : "Turns your one-liner into a name, tagline & premise"}</span></div>
+      <div class="row-2"><div class="field"><label>Channel name</label><input id="wz-name2" value="${esc(w.name)}"/></div>
+        <div class="field"><label>Tagline</label><input id="wz-tag" value="${esc(w.tagline)}" placeholder="one catchy line"/></div></div>
+      <div class="field"><label>Premise <small class="muted">the engine of every episode</small></label><textarea id="wz-prem" rows="6" placeholder="Draft with AI, or write it here…">${esc(w.premise)}</textarea></div>
+      <div class="field"><label>Tone</label><select id="wz-tone">${TONES.map((t) => `<option value="${t}" ${w.tone === t ? "selected" : ""}>${t}</option>`).join("")}</select></div>`;
+    foot = `<button class="btn btn-ghost" onclick="wizGo(1)">${icon("back","icon")} Back</button><button class="btn btn-primary" onclick="wizGo(3)">Next: style ${icon("arrow","icon")}</button>`;
+  } else if (w.step === 3) {
+    title = "Pick the look";
+    const tiles = (S.styles || []).map((s) => `<button type="button" class="style-tile ${w.styleId === s.id ? "on" : ""}" data-style="${s.id}" onclick="wizPickStyle('${s.id}')">
+        <img loading="lazy" src="${s.sample_url}" alt="${esc(s.label)}"/><span>${esc(s.label)}</span></button>`).join("");
+    body = `<p class="muted" style="margin:0 0 12px">Same character in every style — click the look you want.</p>
+      <div class="style-gallery">${tiles || '<span class="muted">No style samples yet — run scripts/gen_style_samples.py.</span>'}</div>`;
+    foot = `<button class="btn btn-ghost" onclick="wizGo(2)">${icon("back","icon")} Back</button><button class="btn btn-primary" onclick="wizGo(4)" ${w.styleId ? "" : "disabled"}>Next: cast ${icon("arrow","icon")}</button>`;
+  } else {
+    title = "Cast & review";
+    const st = styleById(w.styleId);
+    body = `<div class="field"><label>Cast <small class="muted">first checked = lead</small></label><div class="checks wz-cast">${(S.characters || []).map((c) => `<label><input type="checkbox" value="${c.character_id}" ${w.cast.includes(c.character_id) ? "checked" : ""}/> ${esc(c.name)}</label>`).join("") || '<span class="muted">Create characters first (you can add them later).</span>'}</div></div>
+      <div class="field"><label>Narrator voice <small class="muted">optional</small></label><input id="wz-voice" value="${esc(w.voice)}" placeholder="e.g. a voice id"/></div>
+      <div class="wz-review"><b>${esc(w.name || "(unnamed)")}</b> <span class="chip">${esc(w.platform)}</span> <span class="chip">${esc(w.tone)}</span>
+        ${st ? `<div class="wz-review-style"><img src="${st.sample_url}"/><span>${esc(st.label)}</span></div>` : ""}
+        <p class="muted">${esc(w.tagline || "")}</p></div>`;
+    foot = `<button class="btn btn-ghost" onclick="wizGo(3)">${icon("back","icon")} Back</button><button class="btn btn-primary" onclick="wizCreate()">${icon("check","icon")} Create channel</button>`;
+  }
+  $("#modal-root").innerHTML = `<div class="scrim"><div class="modal modal-wide"><div class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn" onclick="document.getElementById('modal-root').innerHTML=''">${icon("x")}</button></div>
+    <div class="wz-steps">${wizStepDots(w.step)}</div>
+    <div class="modal-body">${body}</div>
+    <div class="modal-foot">${foot}</div></div></div>`;
+}
+
 function modalChannel(ch) {
   const c = ch || {};
   const sel = (ch && ch.cast || []).map((m) => m.character_id);
@@ -804,7 +897,10 @@ function modalChannel(ch) {
     <div class="row-2"><div class="field"><label>Name</label><input id="f-name" value="${esc(c.name || "")}" placeholder="Zruv Adventures"/></div>
       <div class="field"><label>Platform</label><input id="f-plat" value="${esc(c.platform || "youtube")}"/></div></div>
     <div class="row-2"><div class="field"><label>Format</label><select id="f-fmt"><option value="long_form" ${c.format === "long_form" ? "selected" : ""}>long_form</option><option value="short_form" ${c.format === "short_form" ? "selected" : ""}>short_form</option></select></div>
-      <div class="field"><label>Art style</label><input id="f-style" value="${esc(c.art_style || "")}" placeholder="3D Pixar comic style, vibrant"/></div></div>
+      <div class="field"><label>Tone</label><select id="f-tone">${["", ...TONES].map((t) => `<option value="${t}" ${(c.tone || "") === t ? "selected" : ""}>${t || "—"}</option>`).join("")}</select></div></div>
+    <div class="row-2"><div class="field"><label>Art style — library</label><select id="f-styleid" onchange="const s=(S.styles||[]).find(x=>x.id===this.value); if(s){document.getElementById('f-style').value=s.prompt;}">
+        <option value="">Custom (use text below)</option>${(S.styles || []).map((s) => `<option value="${s.id}" ${c.art_style_id === s.id ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select></div>
+      <div class="field"><label>Art style — text</label><input id="f-style" value="${esc(c.art_style || "")}" placeholder="3D Pixar comic style, vibrant"/></div></div>
     <div class="field"><label>Premise</label><textarea id="f-prem" rows="3" placeholder="What the series is about…">${esc(c.premise || "")}</textarea></div>
     <div class="row-3"><div class="field"><label>Scenes</label><input type="number" id="f-scenes" value="${c.target_scene_count || 16}"/></div>
       <div class="field"><label>Duration (s)</label><input type="number" id="f-dur" value="${c.target_duration_s || 120}"/></div>
@@ -816,7 +912,7 @@ function modalChannel(ch) {
     async () => {
       const picked = [...document.querySelectorAll(".modal .checks input:checked")].map((i) => i.value);
       const cast = picked.map((id, i) => ({ character_id: id, role: i === 0 ? "lead" : "sidekick" }));
-      const body = { name: $("#f-name").value.trim(), platform: $("#f-plat").value.trim(), format: $("#f-fmt").value, art_style: $("#f-style").value.trim(), premise: $("#f-prem").value.trim(), target_scene_count: +$("#f-scenes").value, target_duration_s: +$("#f-dur").value, video_budget: +$("#f-budget").value, writer_provider: $("#f-writer").value.trim(), narrator_voice_id: $("#f-narr").value.trim(), cast };
+      const body = { name: $("#f-name").value.trim(), platform: $("#f-plat").value.trim(), format: $("#f-fmt").value, tone: $("#f-tone").value, art_style_id: $("#f-styleid").value, art_style: $("#f-style").value.trim(), premise: $("#f-prem").value.trim(), target_scene_count: +$("#f-scenes").value, target_duration_s: +$("#f-dur").value, video_budget: +$("#f-budget").value, writer_provider: $("#f-writer").value.trim(), narrator_voice_id: $("#f-narr").value.trim(), cast };
       if (ch) await jpatch(`/api/channels/${ch.channel_id}`, body); else { const nc = await jpost("/api/channels", body); S.channelId = nc.channel_id; location.hash = `c/${nc.channel_id}/overview`; }
       await loadCore(); await reloadEpisodes(); render();
     }, ch ? "Save" : "Create");

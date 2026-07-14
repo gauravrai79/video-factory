@@ -100,6 +100,7 @@ def _channel_system(channel, cast_chars: list) -> str:
     parts = [
         f"You are the writers' room for a {channel.platform} {fmt} series titled \"{channel.name}\".",
         f"Premise: {channel.premise}" if channel.premise else "",
+        f"Tone: {channel.tone} — keep every episode in this register." if getattr(channel, "tone", "") else "",
         f"Setting / world: {world}" if world else "",
         f"Visual/tone style: {channel.art_style}." if channel.art_style else "",
         (f"LANGUAGE: write ALL spoken content — every dialogue line AND every narration/VO line — "

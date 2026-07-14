@@ -106,6 +106,19 @@ def unit_checks() -> None:
     check("presets include youtube + reel", {"youtube_long", "instagram_reel"} <= set(formats.PLATFORM_PRESETS))
     check("config back-compat for un-configured episode", formats.episode_config(Episode(episode_id="z", channel_id="c", number=1), _C())["layout"] == "landscape")
 
+    # art-style library + concept assistant (stub) + sample assets present
+    from backend import styles as style_lib
+    from backend.agents import concept
+    check("style library has 25+ styles", len(style_lib.ART_STYLES) >= 25)
+    check("style ids unique", len({s["id"] for s in style_lib.ART_STYLES}) == len(style_lib.ART_STYLES))
+    check("prompt_for resolves id -> prompt", "comic" in style_lib.prompt_for("comic_cinematic").lower()
+          and style_lib.prompt_for("free text look") == "free text look")
+    samples = Path("frontend/assets/styles")
+    missing = [s["id"] for s in style_lib.ART_STYLES if not (samples / f"{s['id']}.jpg").is_file()]
+    check("every style has a sample image", not missing, f"missing: {missing[:5]}")
+    cd = concept.draft_concept("a detective dog in Mumbai")
+    check("concept stub returns full scaffold", cd.ok and cd.data.get("premise") and cd.data.get("style_ids"))
+
 
 def main() -> int:
     unit_checks()
