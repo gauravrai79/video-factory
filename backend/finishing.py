@@ -99,6 +99,54 @@ def media_duration(path: str | Path) -> float:
         return 0.0
 
 
+def media_dimensions(path: str | Path) -> tuple[int, int] | None:
+    """(width, height) of the first video/image stream, or None."""
+    r = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+                       capture_output=True, text=True)
+    try:
+        w, h = r.stdout.strip().split("x")
+        return int(w), int(h)
+    except Exception:
+        return None
+
+
+def asset_image_clip(image_path: str | Path, out_path: str | Path, *, duration_s: float,
+                     spec: OutputSpec, direction: str = "in", pad_color: str = "0x0B1020") -> bool:
+    """Render a REAL screenshot into a scene clip that actually looks good in a cinematic ad:
+    - a WIDE image (dashboard/card) fills the frame height and slowly PANS across its width
+      (reveals the whole thing full-height instead of cropping it);
+    - a TALL image fills the width and pans vertically;
+    - a near-frame image fills + a gentle push-in.
+    Padding uses a dark brand color, not black, so a light UI reads as intentional, not letterboxed."""
+    fps = spec.fps
+    W, H = spec.width, spec.height
+    frames = max(int(round(duration_s * fps)), 1)
+    dims = media_dimensions(image_path) or (W, H)
+    iw, ih = dims
+    img_ar, frame_ar = iw / max(ih, 1), W / max(H, 1)
+    wide = img_ar > frame_ar * 1.25
+    tall = img_ar < frame_ar / 1.25
+    d = max(0.1, float(duration_s))
+    if wide:
+        # fill the frame height, slide the crop window horizontally across the width (time-based pan)
+        x = f"(in_w-{W})*(1-t/{d})" if direction == "out" else f"(in_w-{W})*t/{d}"
+        vf = (f"scale=-2:{H}:flags=lanczos,crop=w={W}:h={H}:x='{x}':y=0,setsar=1,format=yuv420p")
+    elif tall:
+        y = f"(in_h-{H})*(1-t/{d})" if direction == "out" else f"(in_h-{H})*t/{d}"
+        vf = (f"scale={W}:-2:flags=lanczos,crop=w={W}:h={H}:x=0:y='{y}',setsar=1,format=yuv420p")
+    else:
+        # near-frame: fit whole image on a brand pad + gentle zoom
+        z = "if(eq(on,0),1.10,max(zoom-0.0006,1.0))" if direction == "out" else "min(zoom+0.0006,1.10)"
+        vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+              f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color={pad_color},scale={W*2}:{H*2}:flags=lanczos,"
+              f"zoompan=z='{z}':d={frames}:fps={fps}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H},"
+              f"setsar=1,format=yuv420p")
+    cmd = [FFMPEG, "-y", "-loop", "1", "-i", str(image_path), "-t", f"{duration_s}",
+           "-vf", vf, "-r", str(fps), "-c:v", spec.video_codec, "-pix_fmt", "yuv420p", "-an", str(out_path)]
+    return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+
+
 def speech_end(path: str | Path, *, noise_db: int = -35, min_silence_s: float = 0.5) -> float | None:
     """Second at which the last audible sound ends (None = no trailing silence worth trimming).
     Used to trim dead air after a spoken line without ever cutting into the speech itself."""

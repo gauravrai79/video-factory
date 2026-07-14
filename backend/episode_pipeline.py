@@ -180,7 +180,7 @@ def _asset_clip(scene: dict, spec: OutputSpec, out_dir: Path) -> tuple[dict, flo
     """Build a scene clip from a REAL uploaded asset (no generation, $0): an image is animated with a
     subtle Ken-Burns move (direction from the scene's asset_motion), a video is trimmed + conformed to
     spec. Silent — the global voiceover/music carries the audio."""
-    from .finishing import ken_burns_clip, normalize_video_shot
+    from .finishing import asset_image_clip, normalize_video_shot
     ap = scene.get("asset_path")
     if not ap or not Path(ap).is_file():
         return {"status": "failed", "error": "asset file missing", "asset": True}, 0.0
@@ -190,8 +190,8 @@ def _asset_clip(scene: dict, spec: OutputSpec, out_dir: Path) -> tuple[dict, flo
     if scene.get("asset_kind") == "video":
         ok = normalize_video_shot(ap, out, duration_s=dur, spec=spec, keep_audio=False)
     else:
-        zoom = "out" if "out" in (scene.get("asset_motion") or "").lower() else "in"
-        ok = ken_burns_clip(ap, out, duration_s=dur, spec=spec, zoom=zoom)
+        direction = "out" if "out" in (scene.get("asset_motion") or "").lower() else "in"
+        ok = asset_image_clip(ap, out, duration_s=dur, spec=spec, direction=direction)
     if not ok:
         return {"status": "failed", "error": "asset clip render failed", "asset": True}, 0.0
     return {"path": out, "status": "ok", "has_audio": False, "has_speech": False, "asset": True,
