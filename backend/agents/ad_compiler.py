@@ -28,6 +28,10 @@ _LABELLED = re.compile(
 _TIMING = re.compile(r"\((?:~)?\s*(\d+)\s*[–\-]\s*(\d+)\s*s\)")
 _HEAD_TITLE = re.compile(r"[·:]\s*[\"“](.+?)[\"”]")
 _ONSCREEN = re.compile(r"On-?screen text[^:]*:\s*\**(.+)", re.I)
+# an "asset scene" uses a REAL uploaded file (product screenshot / screen recording) instead of
+# generating: **Asset:** dashboard.png   or   [ASSET: dashboard.png]  (+ optional **Motion:** zoom in)
+_ASSET = re.compile(r"\*\*Asset:?\*\*\s*([^\n]+)|\[ASSET:\s*([^\]]+)\]", re.I)
+_ASSET_MOTION = re.compile(r"\*\*Motion:?\*\*\s*([^\n]+)", re.I)
 
 
 def _blockquote_text(quote: str) -> str:
@@ -92,6 +96,11 @@ def parse_markdown(md: str) -> dict[str, Any]:
         head_title = _clean_title(ht.group(1)) if ht else ""
         on = _ONSCREEN.search(block)
         on_title = _clean_title(on.group(1)) if on else ""
+        # asset scene — a real uploaded file, not a generated visual
+        am = _ASSET.search(block)
+        asset_name = ((am.group(1) or am.group(2)).strip().strip("`*") if am else "")
+        motm = _ASSET_MOTION.search(block)
+        asset_motion = _clean_title(motm.group(1)) if (asset_name and motm) else ""
         stills: list[tuple[str, str]] = []   # (tag, prompt)
         motions: list[tuple[str, str]] = []
         for lm in _LABELLED.finditer(block):
@@ -101,6 +110,18 @@ def parse_markdown(md: str) -> dict[str, Any]:
             if not text:
                 continue
             (stills if kind in ("imagen", "still") else motions).append((tag, text))
+        if asset_name:                        # one scene backed by the uploaded asset
+            scenes.append({
+                "seq": seq, "label": _clean_title(head.split("—")[-1].split("·")[0]) or f"Scene {seq+1}",
+                "title": on_title or head_title,
+                "asset_name": asset_name, "asset_motion": asset_motion,
+                "still_prompt": _expand(stills[0][1], style_base) if stills else "",   # fallback if not uploaded
+                "motion_prompt": _expand(motions[0][1], style_base) if motions else "",
+                "start_s": start_s, "end_s": end_s,
+                "duration_s": max(2.0, min(10.0, ((end_s - start_s) if (start_s is not None and end_s is not None) else 6))),
+            })
+            seq += 1
+            continue
         if not stills and not motions:
             continue
         pairs = max(len(stills), len(motions), 1)

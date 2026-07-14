@@ -66,7 +66,7 @@ def stage_estimate(ep: Episode) -> float:
     if ep.stage == Stage.SCENES.value:
         res = _episode_resolution(ep)
         return round(sum(fal_video.veo_lite_billed_cost(s.get("duration_s", 6), res, audio=True)
-                         for s in ep.scenes), 4)
+                         for s in ep.scenes if not s.get("asset_path")), 4)   # asset scenes are $0
     if ep.stage == Stage.AUDIO.value:                 # native audio is already in the clips; only music
         return round(pricing.music_cost(None, sum(s.get("duration_s", 6) for s in ep.scenes)), 4)
     return 0.0
@@ -174,6 +174,28 @@ def _gen_scene_clip(scene: dict, cast_map: dict[str, Character], ch: Channel, sp
     info = {"path": path if res.success else "", "status": "ok" if res.success else "failed",
             "error": res.error}
     return info, res.cost_usd
+
+
+def _asset_clip(scene: dict, spec: OutputSpec, out_dir: Path) -> tuple[dict, float]:
+    """Build a scene clip from a REAL uploaded asset (no generation, $0): an image is animated with a
+    subtle Ken-Burns move (direction from the scene's asset_motion), a video is trimmed + conformed to
+    spec. Silent — the global voiceover/music carries the audio."""
+    from .finishing import ken_burns_clip, normalize_video_shot
+    ap = scene.get("asset_path")
+    if not ap or not Path(ap).is_file():
+        return {"status": "failed", "error": "asset file missing", "asset": True}, 0.0
+    out = str(out_dir / "clips" / f"{scene['seq']:03d}.mp4")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    dur = float(scene.get("duration_s", 6) or 6)
+    if scene.get("asset_kind") == "video":
+        ok = normalize_video_shot(ap, out, duration_s=dur, spec=spec, keep_audio=False)
+    else:
+        zoom = "out" if "out" in (scene.get("asset_motion") or "").lower() else "in"
+        ok = ken_burns_clip(ap, out, duration_s=dur, spec=spec, zoom=zoom)
+    if not ok:
+        return {"status": "failed", "error": "asset clip render failed", "asset": True}, 0.0
+    return {"path": out, "status": "ok", "has_audio": False, "has_speech": False, "asset": True,
+            "prompt": f"[asset: {Path(ap).name}]", "cost": 0.0}, 0.0
 
 
 def _scene_has_speech(scene: dict) -> bool:
@@ -679,7 +701,10 @@ def generate_scenes(store, ep: Episode, *, seqs: list[int] | None = None) -> Epi
         cl = scene.get("clip") or {}
         if want is None and cl.get("status") == "ok" and Path(cl.get("path", "")).is_file():
             continue                               # bulk run: skip already-done (idempotent, no re-charge)
-        info, cost = _gen_scene_veo(scene, cast_map, ch, out_dir, aspect=aspect, resolution=resolution)
+        if scene.get("asset_path"):                # real uploaded asset -> Ken-Burns/conform, no Veo, $0
+            info, cost = _asset_clip(scene, episode_spec(ep, ch), out_dir)
+        else:
+            info, cost = _gen_scene_veo(scene, cast_map, ch, out_dir, aspect=aspect, resolution=resolution)
         scene["clip"] = info
         spent += cost
         failed += (info["status"] != "ok")

@@ -8,14 +8,19 @@ voiceover track and the on-screen-title sidecar live on the episode config.
 """
 from __future__ import annotations
 
-import time
+import base64
+import os
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from .agents import ad_compiler
 from .channels import ChannelStore
 from .episodes import EpisodeStore, Stage, StageStatus
+from .finishing import FFMPEG
 
 ONEOFF_SLUG = "__oneoff__"
+VIDEO_EXT = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
 
 
 def system_channel(store, tenant_id: str):
@@ -42,10 +47,40 @@ def _titles(compiled: dict) -> list[dict]:
     return out
 
 
+def _save_asset(out_dir: Path, name: str, data: Any) -> str | None:
+    """Persist one uploaded asset (base64 string, data: URL, or an already-on-disk path) under the
+    episode's assets/ dir. Returns the saved path (or None)."""
+    safe = os.path.basename(str(name)).strip() or "asset"
+    dst = out_dir / "assets" / safe
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(data, str) and os.path.isfile(data):
+        import shutil
+        shutil.copyfile(data, dst)
+        return str(dst)
+    if isinstance(data, str):
+        b64 = data.split(",", 1)[1] if data.startswith("data:") else data
+        try:
+            dst.write_bytes(base64.b64decode(b64))
+            return str(dst)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _poster_frame(video_path: str, out_png: str) -> bool:
+    Path(out_png).parent.mkdir(parents=True, exist_ok=True)
+    return subprocess.run([FFMPEG, "-y", "-i", video_path, "-frames:v", "1", "-q:v", "3", out_png],
+                          capture_output=True).returncode == 0
+
+
 def create_from_md(store, tenant_id: str, md: str, *, aspect: str | None = None,
-                   music: bool = True, resolution: str = "720p", voice_id: str = "Rachel") -> Any:
+                   music: bool = True, resolution: str = "720p", voice_id: str = "Rachel",
+                   assets: dict[str, Any] | None = None) -> Any:
     """Compile the MD and create a ready-to-run one-off Episode. Lands at the REFS stage with every
-    scene pre-populated (verbatim keyframe + motion prompts); Setup/Idea/Script are skipped."""
+    scene pre-populated (verbatim keyframe + motion prompts); Setup/Idea/Script are skipped. `assets`
+    maps a filename referenced by an **Asset:** scene to its bytes (base64 / data-URL / path) — those
+    scenes use the REAL file (screenshot animated with Ken Burns, or a screen recording) instead of
+    generating a visual."""
     compiled = ad_compiler.compile_md(md or "")
     if not compiled.get("scenes"):
         raise ValueError("could not find any scenes in that script")
@@ -60,8 +95,10 @@ def create_from_md(store, tenant_id: str, md: str, *, aspect: str | None = None,
             "frozen_beat": s.get("still_prompt", ""),
             "still_prompt_override": s.get("still_prompt", ""),   # verbatim keyframe
             "veo_prompt_override": s.get("motion_prompt", ""),    # verbatim video prompt
+            "asset_name": s.get("asset_name", ""), "asset_motion": s.get("asset_motion", ""),
             "camera": "", "cast_present": [], "dialogue": [], "narration": "",
-            "shot_type": "broll", "duration_s": dur, "scripted_duration_s": dur,
+            "shot_type": "asset" if s.get("asset_name") else "broll",
+            "duration_s": dur, "scripted_duration_s": dur,
             "on_screen_text": s.get("title", ""), "beat_type": "neutral", "time_jump": False,
             "location_id": f"scene_{s['seq']}",
             "reference_image": {}, "clip": {}, "voice_clips": [], "status": "pending",
@@ -87,6 +124,32 @@ def create_from_md(store, tenant_id: str, md: str, *, aspect: str | None = None,
                     scenes=scenes, config=config,
                     stage=Stage.REFS.value, stage_status=StageStatus.PENDING.value,
                     refs_batch_done=False)
+    # Resolve asset scenes now that we have the episode's out dir. An image asset becomes the scene's
+    # reference still (Ken-Burns'd into a clip at the Scenes stage); a video asset gets a poster frame.
+    assets = assets or {}
+    out_dir = Path(os.environ.get("VF_OUT_DIR", "out")) / "episodes" / ep.episode_id
+    n_assets, missing = 0, []
+    for sc in ep.scenes:
+        name = (sc.get("asset_name") or "").strip()
+        if not name:
+            continue
+        saved = _save_asset(out_dir, name, assets.get(name) or assets.get(os.path.basename(name)))
+        if not saved:
+            missing.append(name)
+            sc["shot_type"] = "broll"        # fall back to generating from the prompt (if provided)
+            sc["asset_name"] = ""
+            continue
+        kind = "video" if Path(saved).suffix.lower() in VIDEO_EXT else "image"
+        sc["asset_path"] = saved
+        sc["asset_kind"] = kind
+        if kind == "image":
+            sc["reference_image"] = {"path": saved, "status": "ok", "asset": True}
+        else:
+            poster = str(out_dir / "stills" / f"{sc['seq']:03d}.png")
+            if _poster_frame(saved, poster):
+                sc["reference_image"] = {"path": poster, "status": "ok", "asset": True}
+        n_assets += 1
     ep.log("oneoff_compiled", {"scenes": len(scenes), "vo_lines": len(config["voiceover"]),
-                               "aspect": config["aspect"]})
+                               "aspect": config["aspect"], "assets": n_assets,
+                               "missing_assets": missing})
     return eps.update(ep)

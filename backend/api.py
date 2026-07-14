@@ -466,6 +466,8 @@ def _episode_view(ep, channel_name: str = "", ch=None) -> dict[str, Any]:
             sc["still_url"] = f"/api/episodes/{ep.episode_id}/still/{seq}"
         if (sc.get("clip") or {}).get("status") == "ok":
             sc["clip_url"] = f"/api/episodes/{ep.episode_id}/clip/{seq}"
+        sc["asset"] = bool(sc.get("asset_path"))
+        sc["asset_kind"] = sc.get("asset_kind", "")
     tl = ep.timeline or {}
     d["rough_cut_url"] = f"/api/episodes/{ep.episode_id}/rough-cut" if tl.get("rough_cut") else None
     d["audio_cut_url"] = f"/api/episodes/{ep.episode_id}/audio-cut" if tl.get("audio_cut") else None
@@ -527,7 +529,8 @@ def create_oneoff(body: dict[str, Any]) -> dict[str, Any]:
         ep = oneoff.create_from_md(store, _tenant(), md, aspect=(body or {}).get("aspect"),
                                    music=bool((body or {}).get("music", True)),
                                    resolution=(body or {}).get("resolution", "720p"),
-                                   voice_id=(body or {}).get("voice") or "Rachel")
+                                   voice_id=(body or {}).get("voice") or "Rachel",
+                                   assets=(body or {}).get("assets") or {})
     except ValueError as e:
         raise HTTPException(422, str(e))
     ch = ChannelStore(store).get(ep.channel_id)

@@ -135,6 +135,15 @@ def unit_checks() -> None:
     check("compiler extracts on-screen title + timing", comp["scenes"][0]["title"] == "Line one"
           and comp["scenes"][0]["start_s"] == 0)
 
+    # asset scenes: real uploaded file instead of a generated visual
+    asset_md = ('# Hybrid Ad\n\n## SCENE 1 — MOOD (0–6s) · "Vibe"\n**Imagen (still):**\n> Abstract hero.\n'
+                '**Veo (motion):**\n> Slow push.\n\n## SCENE 2 — DEMO (6–14s) · "The product"\n'
+                '**Asset:** dashboard.png\n**Motion:** zoom in\nOn-screen text: **See it work.**')
+    ac = ad_compiler.compile_md(asset_md)
+    check("compiler detects asset scene", ac["scenes"][1].get("asset_name") == "dashboard.png"
+          and ac["scenes"][1].get("asset_motion").lower().startswith("zoom"))
+    check("non-asset scene has no asset_name", not ac["scenes"][0].get("asset_name"))
+
 
 def main() -> int:
     unit_checks()

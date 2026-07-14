@@ -305,6 +305,9 @@ function viewQuickVideo() {
       <p class="muted">Paste a Markdown prompt-pack (scenes with image + motion prompts, optional voiceover). It compiles into the same keyframe→video→assembly pipeline — outside channels. No cast needed.</p></div>
     <div class="qv-form">
       <div class="field"><label>Script (Markdown)</label><textarea id="qv-md" rows="12" placeholder="Paste your prompt pack…" oninput="S.qvDraft=this.value">${esc(S.qvDraft || "")}</textarea></div>
+      <div class="field"><label>Product assets <small class="muted">to show the real tool: add a scene with <code>**Asset:** dashboard.png</code> (optional <code>**Motion:** zoom in</code>) and attach the file here</small></label>
+        <input type="file" id="qv-assets" multiple accept="image/*,video/*" onchange="qvAddAssets(this.files)"/>
+        <div id="qv-asset-list" style="margin-top:8px">${qvAssetChips()}</div></div>
       <div class="row-3">
         <div class="field"><label>Aspect</label><select id="qv-aspect"><option value="16:9">16:9 landscape</option><option value="9:16">9:16 vertical</option></select></div>
         <div class="field"><label>Resolution</label><select id="qv-res"><option value="720p">720p</option><option value="1080p">1080p</option></select></div>
@@ -316,11 +319,25 @@ function viewQuickVideo() {
     </div>
     ${list ? `<div class="section-title">Your videos</div><div class="ep-grid">${list}</div>` : ""}`;
 }
+function qvAssetChips() {
+  const names = Object.keys(S.qvAssets || {});
+  if (!names.length) return `<span class="muted" style="font-size:12.5px">No files attached.</span>`;
+  return names.map((n) => `<span class="chip">${icon("image","icon")} ${esc(n)}</span>`).join(" ")
+    + ` <button class="linkish" onclick="S.qvAssets={};document.getElementById('qv-asset-list').innerHTML=qvAssetChips()">clear</button>`;
+}
+async function qvAddAssets(files) {
+  S.qvAssets = S.qvAssets || {};
+  for (const f of files) {
+    const b64 = await new Promise((r) => { const rd = new FileReader(); rd.onload = () => r(rd.result.split(",")[1]); rd.readAsDataURL(f); });
+    S.qvAssets[f.name] = b64;
+  }
+  const el = document.getElementById("qv-asset-list"); if (el) el.innerHTML = qvAssetChips();
+}
 async function quickCreate() {
   const md = $("#qv-md").value.trim();
   if (!md) { toast("Paste a script first", "err"); return; }
-  const body = { md, aspect: $("#qv-aspect").value, resolution: $("#qv-res").value, voice: $("#qv-voice").value.trim() || "Rachel", music: $("#qv-music").checked };
-  try { const ep = await jpost("/api/oneoff", body); S.qvDraft = ""; toast("Compiled ✨"); go(`quick/${ep.episode_id}`); }
+  const body = { md, aspect: $("#qv-aspect").value, resolution: $("#qv-res").value, voice: $("#qv-voice").value.trim() || "Rachel", music: $("#qv-music").checked, assets: S.qvAssets || {} };
+  try { const ep = await jpost("/api/oneoff", body); S.qvDraft = ""; S.qvAssets = {}; toast("Compiled ✨"); go(`quick/${ep.episode_id}`); }
   catch (err) { toast(err.message, "err"); }
 }
 
@@ -497,7 +514,7 @@ function modalScene(seq) {
     render(); toast("Scene updated");
   }, "Save scene");
 }
-const shotLabel = (t) => ({ broll: "b-roll", still_kenburns: "ken burns", lipsync_still: "lip-sync", hero_video: "hero video" }[t] || t);
+const shotLabel = (t) => ({ broll: "b-roll", still_kenburns: "ken burns", lipsync_still: "lip-sync", hero_video: "hero video", asset: "asset" }[t] || t);
 
 /* --- Refs (preview + live batch grid) --- */
 function stageRefs(e, gen, ro) {
@@ -591,19 +608,22 @@ function stageScenes(e, gen, ro) {
 }
 function sceneTile(e, s, gen, ro) {
   const clip = s.clip || {}; const okClip = clip.status === "ok"; const failed = clip.status === "failed";
+  const isAsset = s.asset;
   const sel = (S.sceneSel || new Set()).has(s.seq);
   const working = gen && !okClip;
   const inner = s.still_url ? `<img src="${s.still_url}?t=${e.updated_at}"/>` : `<div class="spin-lg"></div>`;
   const clipTag = s.clip_url ? `<span class="clip-tag">${icon("play","icon")} clip</span>` : "";
+  const assetTag = isAsset ? `<span class="asset-tag">${icon("image","icon")} ${esc(s.asset_kind || "asset")}</span>` : "";
   const qc = clip.qc;
   const qcBadge = qc && !qc.passed ? `<span class="qc-flag" title="${esc((qc.reasons || []).join(" · "))}">⚠ QC</span>` : "";
   const overlay = (working ? `<div class="spin-lg" style="position:absolute"></div>` : (failed ? `<div class="fail">${icon("x","icon")} failed</div>` : "")) + qcBadge;
   const check = (!ro && !gen) ? `<label class="tile-check" data-selscene="${s.seq}"><input type="checkbox" ${sel ? "checked" : ""} tabindex="-1"/></label>` : "";
-  const open = (!ro && !gen) ? `data-scenegen="${s.seq}"` : "";
+  // asset scenes have no editable prompt — they use a real uploaded file
+  const open = (!ro && !gen && !isAsset) ? `data-scenegen="${s.seq}"` : "";
   return `<div class="tile ${okClip ? "done" : (working ? "working" : (failed ? "fail" : ""))}">
-    <div class="thumb" ${open}>${inner}${clipTag}${overlay}${check}</div>
+    <div class="thumb" ${open}>${inner}${clipTag}${assetTag}${overlay}${check}</div>
     <div class="row"><small>#${s.seq + 1}</small><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span>
-      ${(!ro && !gen) ? `<button class="reroll-link" data-scenegen="${s.seq}">${icon("edit","icon")} prompt</button>` : ""}</div></div>`;
+      ${(!ro && !gen && !isAsset) ? `<button class="reroll-link" data-scenegen="${s.seq}">${icon("edit","icon")} prompt</button>` : (isAsset ? `<span class="muted" style="font-size:11px">your file</span>` : "")}</div></div>`;
 }
 async function modalSceneGen(seq) {
   const s = (S.ep.scenes || [])[seq]; if (!s) return;
