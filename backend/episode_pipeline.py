@@ -569,13 +569,17 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
         cast_map = _cast_map(cs, ep.cast or ch.cast_ids())
         out_dir = _out_dir(ep)
         framing = formats.framing_hint(formats.episode_config(ep, ch))
-        pidx = next((i for i, s in enumerate(ep.scenes) if s.get("cast_present")), 0)
+        # prefer a cast scene; else the first GENERATED (non-asset) scene — never preview an asset
+        # scene (its still is the real uploaded file, nothing to generate).
+        pidx = next((i for i, s in enumerate(ep.scenes) if s.get("cast_present")), None)
+        if pidx is None:
+            pidx = next((i for i, s in enumerate(ep.scenes) if not s.get("asset_path")), 0)
         preview = ep.scenes[pidx]
         info, cost = _gen_scene_still(preview, cast_map, ch, out_dir, style_note=ep.style_note,
                                       framing=framing, aspect_ratio=formats.veo_aspect(formats.episode_config(ep, ch)["layout"]))
         preview["reference_image"] = info
         for i, scene in enumerate(ep.scenes):     # a fresh preview invalidates any prior batch
-            if i != pidx:
+            if i != pidx and not scene.get("asset_path"):   # keep asset scenes' real files intact
                 scene["reference_image"] = {}
         ep.refs_batch_done = False
         ep.spent_usd = round(ep.spent_usd + cost, 4)
