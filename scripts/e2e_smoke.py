@@ -119,6 +119,22 @@ def unit_checks() -> None:
     cd = concept.draft_concept("a detective dog in Mumbai")
     check("concept stub returns full scaffold", cd.ok and cd.data.get("premise") and cd.data.get("style_ids"))
 
+    # ad/MD compiler (one-off "Quick Video")
+    from backend.agents import ad_compiler
+    ad_md = ('# Test Ad\n\n## STYLE BASE\n> Cinematic premium look.\n\n'
+             '## SCENE 1 — HOOK (0–8s) · "Line one"\n**Imagen (still):**\n> A hero shot. [STYLE BASE]\n'
+             '**Veo (motion):**\n> Slow push. No dialogue. [STYLE BASE]\nOn-screen text: **Line one.**\n\n'
+             '## SCENE 2 — END (8–16s) · "Line two"\n**Imagen (still):**\n> A calm shot. [STYLE BASE]\n'
+             '**Veo (motion):**\n> Gentle drift. [STYLE BASE]\n\n'
+             '## VOICEOVER SCRIPT\n1. "First line."\n2. "Second line."\n*Generate in any TTS.*')
+    comp = ad_compiler.compile_md(ad_md)
+    check("compiler finds 2 scenes", len(comp["scenes"]) == 2)
+    check("STYLE BASE expanded verbatim", "[STYLE BASE]" not in comp["scenes"][0]["still_prompt"]
+          and "Cinematic premium" in comp["scenes"][0]["still_prompt"])
+    check("compiler VO excludes italic note", comp["voiceover"] == ["First line.", "Second line."])
+    check("compiler extracts on-screen title + timing", comp["scenes"][0]["title"] == "Line one"
+          and comp["scenes"][0]["start_s"] == 0)
+
 
 def main() -> int:
     unit_checks()

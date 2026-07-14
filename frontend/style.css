@@ -267,6 +267,14 @@ svg { display: block; }
 .qc-notes { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
 .qc-notes li { margin: 3px 0; }
 
+/* --- Quick Video (one-off) --- */
+.qv-form { max-width: 760px; display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
+.qv-form textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.ep-card { text-align: left; border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--panel2); cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
+.ep-card:hover { border-color: var(--accent); }
+.ep-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
 /* --- channel wizard --- */
 .modal-wide { max-width: 720px; width: 92vw; }
 .wz-steps { display: flex; align-items: center; gap: 6px; padding: 4px 20px 14px; flex-wrap: wrap; }

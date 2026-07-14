@@ -59,6 +59,7 @@ const charById = (id) => S.characters.find((c) => c.character_id === id);
 function parseHash() {
   const h = location.hash.replace(/^#\/?/, "");
   const [a, b, c, d, e] = h.split("/");
+  if (a === "quick") return { view: "quick", id: b, stage: c };   // one-off, outside channels
   if (a === "c" && b) return { cid: b, view: c || "overview", id: d, stage: e };
   return { view: "home" };
 }
@@ -66,6 +67,11 @@ const go = (h) => { location.hash = h; };
 
 async function route() {
   const r = parseHash();
+  if (r.view === "quick") {
+    if (r.id) { try { S.ep = await jget(`/api/episodes/${r.id}`); } catch { S.ep = null; } }
+    else { S.ep = null; try { S.oneoffs = await jget("/api/oneoff"); } catch (e) { S.oneoffs = []; } }
+    render(); managePolling(); return;
+  }
   if (r.view === "home" || !S.channels.length) return render();
   if (r.cid && S.channelId !== r.cid) S.channelId = r.cid;
   if (!channel()) { S.channelId = S.channels[0]?.channel_id; }
@@ -104,6 +110,7 @@ function render() {
         ${railItem("cast", "users", "Cast")}
         ${railItem("episodes", "film", "Episodes")}
         ${railItem("transitions", "sparkles", "Transitions")}
+        <button class="rail-item ${parseHash().view === "quick" ? "active" : ""}" data-nav="quick">${icon("wand")}<span>Quick Video</span></button>
         <div class="rail-spacer"></div>
         <button class="rail-item" data-newchannel>${icon("plus")}<span>New channel</span></button>
         ${railItem("settings", "settings", "Settings")}
@@ -117,6 +124,7 @@ function render() {
   else if (v === "characters") page.innerHTML = viewCharacter(parseHash().id);
   else if (v === "transitions") page.innerHTML = viewTransitions();
   else if (v === "episodes") page.innerHTML = viewEpisodes();
+  else if (v === "quick") page.innerHTML = parseHash().id ? viewWorkspace() : viewQuickVideo();
   else if (v === "ep") page.innerHTML = viewWorkspace();
   else if (v === "settings") page.innerHTML = viewSettings();
   else page.innerHTML = viewOverview();
@@ -259,24 +267,61 @@ function viewSettings() {
 const STAGES = [["setup", "Setup"], ["idea", "Idea"], ["script", "Script"], ["refs", "Refs"], ["scenes", "Scenes"], ["audio", "Audio"], ["assembly", "Assembly"], ["done", "Done"]];
 function viewWorkspace() {
   const e = S.ep; if (!e) return `<p class="muted">Episode not found.</p>`;
-  const idx = STAGES.findIndex(([k]) => k === e.stage);
-  const viewed = (parseHash().stage && STAGES.some(([k]) => k === parseHash().stage)) ? parseHash().stage : e.stage;
+  // one-off videos live outside channels and skip Setup/Idea/Script (compiled from the script)
+  const stages = e.oneoff ? STAGES.filter(([k]) => !["setup", "idea", "script"].includes(k)) : STAGES;
+  const base = e.oneoff ? `quick/${e.episode_id}` : `c/${S.channelId}/ep/${e.episode_id}`;
+  const backNav = e.oneoff ? "quick" : `c/${S.channelId}/episodes`;
+  const idx = stages.findIndex(([k]) => k === e.stage);
+  const viewed = (parseHash().stage && stages.some(([k]) => k === parseHash().stage)) ? parseHash().stage : e.stage;
   const readOnly = viewed !== e.stage;
-  const steps = STAGES.map(([k, label], i) => {
+  const steps = stages.map(([k, label], i) => {
     const reached = i <= idx || e.stage === "done";
     const cls = (i < idx || e.stage === "done") ? "done" : (i === idx ? "current" : "");
     const viewing = k === viewed ? "viewing" : "";
     const num = (i < idx || e.stage === "done") ? icon("check", "icon") : (i + 1);
-    const attr = reached ? `data-nav="c/${S.channelId}/ep/${e.episode_id}/${k}"` : "disabled";
+    const attr = reached ? `data-nav="${base}/${k}"` : "disabled";
     return `<button class="step ${cls} ${viewing}" ${attr} style="${reached ? "" : "opacity:.45;cursor:default"}"><span class="num">${num}</span>${label}</button>`;
   }).join(`<span class="step-sep">${icon("arrow", "icon")}</span>`);
-  const banner = readOnly ? `<div class="chip" style="margin-bottom:14px">${icon("check","icon")} Viewing an approved stage (read-only) · <button class="linkish" data-nav="c/${S.channelId}/ep/${e.episode_id}/${e.stage}">back to current</button></div>` : "";
-  return `<a class="ws-back" data-nav="c/${S.channelId}/episodes">${icon("back")} Episodes</a>
+  const banner = readOnly ? `<div class="chip" style="margin-bottom:14px">${icon("check","icon")} Viewing an approved stage (read-only) · <button class="linkish" data-nav="${base}/${e.stage}">back to current</button></div>` : "";
+  const meta = e.oneoff
+    ? `<span>${e.scene_count} scenes</span><span>${esc((e.config || {}).aspect || "16:9")}</span>${e.has_voiceover ? "<span>voiceover</span>" : ""}<span>spent ${fmt$(e.spent_usd)}</span>`
+    : `<span>${e.cast.length} cast</span><span>${e.scene_count} scenes</span><span>writer ${esc(e.writer_model || "—")}</span><span>spent ${fmt$(e.spent_usd)}</span>`;
+  return `<a class="ws-back" data-nav="${backNav}">${icon("back")} ${e.oneoff ? "Quick Video" : "Episodes"}</a>
     <div class="ws-head" style="margin-top:12px"><h1>${esc(e.title)}</h1>
-      <div class="ws-meta"><span>${e.cast.length} cast</span><span>${e.scene_count} scenes</span><span>writer ${esc(e.writer_model || "—")}</span><span>spent ${fmt$(e.spent_usd)}</span></div></div>
+      <div class="ws-meta">${meta}</div></div>
     <div class="stepper">${steps}</div>
     ${banner}
     <div class="stage-body" id="stagebody">${renderStage(e, viewed, readOnly)}</div>`;
+}
+
+/* ---------------- Quick Video (one-off from a script) ---------------- */
+const SAMPLE_MD = "# My Ad — Prompt Pack\n\n## STYLE BASE (append to every prompt)\n> Cinematic, premium brand film, moody lighting.\n\n## SCENE 1 — HOOK (0–8s) · \"Your headline\"\n**Imagen (still):**\n> A striking hero image. [STYLE BASE]\n**Veo (motion):**\n> Slow push-in. Ambient hum, no dialogue. [STYLE BASE]\nOn-screen text: **Your headline.**\n\n## VOICEOVER SCRIPT\n1. \"Your first narration line.\"\n2. \"Your closing line.\"";
+function viewQuickVideo() {
+  const list = (S.oneoffs || []).map((e) => `<button class="ep-card" data-nav="quick/${e.episode_id}">
+      <div class="ep-card-top"><b>${esc(e.title)}</b><span class="chip">${esc(e.stage)}</span></div>
+      <div class="muted">${e.scene_count} scenes · ${esc((e.config || {}).aspect || "16:9")} · spent ${fmt$(e.spent_usd)}</div>
+      ${e.final_url ? `<span class="chip ok">${icon("check","icon")} rendered</span>` : ""}</button>`).join("");
+  return `<div class="page-head"><h1>${icon("wand")} Quick Video</h1>
+      <p class="muted">Paste a Markdown prompt-pack (scenes with image + motion prompts, optional voiceover). It compiles into the same keyframe→video→assembly pipeline — outside channels. No cast needed.</p></div>
+    <div class="qv-form">
+      <div class="field"><label>Script (Markdown)</label><textarea id="qv-md" rows="12" placeholder="Paste your prompt pack…" oninput="S.qvDraft=this.value">${esc(S.qvDraft || "")}</textarea></div>
+      <div class="row-3">
+        <div class="field"><label>Aspect</label><select id="qv-aspect"><option value="16:9">16:9 landscape</option><option value="9:16">9:16 vertical</option></select></div>
+        <div class="field"><label>Resolution</label><select id="qv-res"><option value="720p">720p</option><option value="1080p">1080p</option></select></div>
+        <div class="field"><label>Voice (VO)</label><input id="qv-voice" value="Rachel" placeholder="narrator voice"/></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="qv-music" checked/> Background music bed</label>
+      <div style="margin-top:14px;display:flex;gap:10px"><button class="btn btn-primary" data-qvcreate>${icon("wand")} Compile &amp; create</button>
+        <button class="btn btn-ghost" onclick="document.getElementById('qv-md').value=SAMPLE_MD">Load sample</button></div>
+    </div>
+    ${list ? `<div class="section-title">Your videos</div><div class="ep-grid">${list}</div>` : ""}`;
+}
+async function quickCreate() {
+  const md = $("#qv-md").value.trim();
+  if (!md) { toast("Paste a script first", "err"); return; }
+  const body = { md, aspect: $("#qv-aspect").value, resolution: $("#qv-res").value, voice: $("#qv-voice").value.trim() || "Rachel", music: $("#qv-music").checked };
+  try { const ep = await jpost("/api/oneoff", body); S.qvDraft = ""; toast("Compiled ✨"); go(`quick/${ep.episode_id}`); }
+  catch (err) { toast(err.message, "err"); }
 }
 
 function renderStage(e, stage, readOnly) {
@@ -621,13 +666,18 @@ function stageAssembly(e, gen, ro) {
                  `<button class="btn btn-ghost" data-run>${icon("refresh")} Re-render cut</button>`,
                  `<a class="btn btn-ghost" href="${e.final_url}" download>${icon("download")} Download</a>`])
     : `<div style="margin-top:14px"><button class="btn btn-primary" data-run ${gen ? "disabled" : ""}>${gen ? spin() : icon("film")} ${gen ? "Rendering…" : "Render final cut"}</button></div>`;
-  return `<p class="stage-intro">The stitch: clips (native audio) + transitions + ${(e.timeline || {}).music ? "music bed" : "no music"} + loudness normalization → final episode.</p>
-    ${seamEditor(e)}${player}${bar}`;
+  const titles = e.titles_url ? `<a class="btn btn-ghost" href="${e.titles_url}" download>${icon("download")} Titles (.srt)</a>` : "";
+  const intro = e.oneoff
+    ? `The stitch: clips (native ambient) ${e.has_voiceover ? "+ voiceover (music ducked under it) " : ""}+ loudness normalization → text-free master. On-screen titles ship as a timed .srt to composite.`
+    : `The stitch: clips (native audio) + transitions + ${(e.timeline || {}).music ? "music bed" : "no music"} + loudness normalization → final episode.`;
+  return `<p class="stage-intro">${intro}</p>
+    ${e.oneoff ? "" : seamEditor(e)}${player}${bar}${titles ? `<div style="margin-top:10px">${titles}</div>` : ""}`;
 }
 function stageDone(e) {
-  return `<div class="done-banner">${icon("check")} Episode complete</div>
+  return `<div class="done-banner">${icon("check")} ${e.oneoff ? "Video" : "Episode"} complete</div>
     ${e.final_url ? `<video class="player" controls preload="metadata" src="${e.final_url}?t=${e.updated_at}"></video>
-      <a class="btn btn-primary" href="${e.final_url}" download>${icon("download")} Download episode</a>` : ""}`;
+      <div style="display:flex;gap:10px;margin-top:12px"><a class="btn btn-primary" href="${e.final_url}" download>${icon("download")} Download ${e.oneoff ? "video" : "episode"}</a>
+      ${e.titles_url ? `<a class="btn btn-ghost" href="${e.titles_url}" download>${icon("download")} Titles (.srt)</a>` : ""}</div>` : ""}`;
 }
 
 /* ---------------- small helpers ---------------- */
@@ -664,7 +714,7 @@ async function epAct(fn, optimisticGen) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans],[data-scenegen],[data-selscene],[data-selall],[data-genselected],[data-genremaining],[data-skipmusic],[data-saveseams],[data-saveconfig],[data-delchannel]");
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans],[data-scenegen],[data-selscene],[data-selall],[data-genselected],[data-genremaining],[data-skipmusic],[data-saveseams],[data-saveconfig],[data-delchannel],[data-qvcreate]");
   // close dropdown on outside click
   if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
   if (!t) return;
@@ -713,6 +763,7 @@ document.addEventListener("click", async (ev) => {
     if (!confirm(`Generate ${seqs.length} scene(s) (~$${(seqs.length * SCENE_UNIT).toFixed(2)})?`)) return;
     return epAct(async () => { const r = await jpost(`/api/episodes/${S.ep.episode_id}/scenes/generate`, { seqs }); S.sceneSel = new Set(); return r; }, true);
   }
+  if (d.qvcreate !== undefined) return quickCreate();
   if (d.saveconfig !== undefined) {
     const body = { platform: S.setupPreset, layout: $("#cfg-layout").value, duration_s: +$("#cfg-duration").value,
       scene_count: +$("#cfg-scenes").value, resolution: $("#cfg-res").value, language: $("#cfg-lang").value.trim(),

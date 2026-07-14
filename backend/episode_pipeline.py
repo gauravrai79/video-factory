@@ -112,8 +112,12 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
                      model: str | None = None, framing: str = "", aspect_ratio: str = "16:9") -> tuple[dict, float]:
     present = shot_prompt.scene_cast(scene, cast_map)
     prompt, refs = shot_prompt.reference_still_prompt(scene, present, ch, framing=framing)
+    # A one-off/ad scene carries the author's exact keyframe prompt — honor it verbatim.
+    stored_override = (scene.get("still_prompt_override") or "").strip()
     if prompt_override:
         prompt = prompt_override
+    elif stored_override:
+        prompt = stored_override
     if style_note:
         prompt = f"{prompt} {style_note}"
     safety = max([c.safety_tolerance for c in present], default=5)
@@ -360,10 +364,39 @@ def _assemble_scenes_cut(ep: Episode, ch: Channel, *, music_path: str | None = N
         overrides = (ep.timeline or {}).get("seams") or {}
         shots = transitions.interleave(shots, kept, ch, overrides=overrides)
     out = str(_out_dir(ep) / out_name)
-    fr = assemble_scored(shots, out, spec=episode_spec(ep, ch), music_path=music_path)
+    vo = (ep.timeline or {}).get("voiceover")
+    if vo and not Path(vo).is_file():
+        vo = None
+    fr = assemble_scored(shots, out, spec=episode_spec(ep, ch), music_path=music_path, vo_path=vo)
     if fr.success:
         ep.timeline = {**(ep.timeline or {}), out_key: out, "silent": False, "probe": fr.probe}
     return fr.success, fr.error or ""
+
+
+def _write_titles(ep: Episode) -> str | None:
+    """Write the on-screen-title sidecar (SRT) for a one-off/ad — text-free master + timed titles the
+    creator composites externally. Uses authored MD timings when present, else clip durations."""
+    titles = (ep.config or {}).get("titles") or []
+    if not titles:
+        return None
+
+    def ts(sec: float) -> str:
+        sec = max(0.0, float(sec)); h = int(sec // 3600); m = int(sec % 3600 // 60)
+        s = sec % 60
+        return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
+    # fall back to running clip durations when the MD gave no absolute timings
+    durs = {s["seq"]: s.get("duration_s", 6) for s in ep.scenes}
+    running, srt = 0.0, []
+    for i, t in enumerate(titles, 1):
+        start = t.get("start_s"); end = t.get("end_s")
+        if start is None or end is None:
+            start = running; end = running + durs.get(t.get("seq"), 6)
+        running = end
+        srt.append(f"{i}\n{ts(start)} --> {ts(end)}\n{t['text']}\n")
+    path = str(_out_dir(ep) / "titles.srt")
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text("\n".join(srt), encoding="utf-8")
+    return path
 
 
 def _assemble_audio_cut(ep: Episode, ch: Channel, *, regen_music: bool = False,
@@ -544,10 +577,12 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
             return _fail(eps, ep, f"final assembly failed: {err}")
         edl = [{"seq": s["seq"], "shot_type": s.get("shot_type"), "duration_s": s.get("duration_s"),
                 "heading": s.get("heading")} for s in ep.scenes]
-        ep.timeline = {**(ep.timeline or {}), "edl": edl}
+        titles_path = _write_titles(ep)          # one-off/ad: timed on-screen-title sidecar (SRT)
+        ep.timeline = {**(ep.timeline or {}), "edl": edl, **({"titles_srt": titles_path} if titles_path else {})}
         ep.stage_status = StageStatus.AWAITING_REVIEW.value
         ep.log("assembly", {"scenes": len(ep.scenes), "music": bool(music),
-                            "seam_overrides": len((ep.timeline or {}).get("seams") or {})})
+                            "voiceover": bool((ep.timeline or {}).get("voiceover")),
+                            "titles": bool(titles_path)})
 
     else:
         return _fail(eps, ep, f"stage '{stage.value}' runs in a later milestone")
@@ -659,22 +694,38 @@ def generate_scenes(store, ep: Episode, *, seqs: list[int] | None = None) -> Epi
 
 
 def generate_audio(store, ep: Episode) -> Episode:
-    """The Veo clips already carry native voice + lip-sync — this stage only generates an OPTIONAL
-    music bed (mixed under the clips at assembly). It can be skipped entirely at the approve gate."""
+    """The Veo clips already carry native audio — this stage generates an OPTIONAL music bed and, for
+    a one-off/ad, the GLOBAL VOICEOVER track (one clean narration file laid over the whole cut and
+    ducking the music at assembly). Skippable at the approve gate."""
     eps, chs, cs, ch, cast = _ctx(store, ep)
     if not all((s.get("clip") or {}).get("status") == "ok" for s in ep.scenes):
         return _fail(eps, ep, "generate + approve the scenes first")
     out_dir = _out_dir(ep)
     total_dur = round(sum(s.get("duration_s", 6) for s in ep.scenes), 2)
+    cfg = ep.config or {}
+    tl = dict(ep.timeline or {})
+    cost = 0.0
+    # Music: use the ad's music brief when present, else the channel score.
     music_path = str(out_dir / "music.mp3")
-    mr = music_cap.generate(prompt=_music_prompt(ch), output_path=music_path,
-                            duration_s=total_dur, execute=True)
-    ep.spent_usd = round(ep.spent_usd + mr.cost_usd, 4)
+    mprompt = (cfg.get("music_brief") or "").strip() or _music_prompt(ch)
+    mr = music_cap.generate(prompt=mprompt, output_path=music_path, duration_s=total_dur, execute=True)
+    cost += mr.cost_usd
     if not mr.ok:
         return _fail(eps, ep, f"music generation failed: {mr.error}")
-    ep.timeline = {**(ep.timeline or {}), "music": music_path}
+    tl["music"] = music_path
+    # Global voiceover (one-off): TTS the whole narration script into one file.
+    vo_text = (cfg.get("voiceover_text") or "").strip()
+    if vo_text:
+        vo_path = str(out_dir / "voiceover.mp3")
+        vr = voice_cap.speak(text=vo_text, output_path=vo_path,
+                             voice_id=cfg.get("voice_id") or "Rachel", execute=True)
+        cost += vr.cost_usd
+        if vr.ok:
+            tl["voiceover"] = vo_path
+    ep.spent_usd = round(ep.spent_usd + cost, 4)
+    ep.timeline = tl
     ep.stage_status = StageStatus.AWAITING_REVIEW.value
-    ep.log("audio", {"music_cost_usd": round(mr.cost_usd, 4), "duration_s": total_dur})
+    ep.log("audio", {"cost_usd": round(cost, 4), "duration_s": total_dur, "voiceover": bool(vo_text)})
     return eps.update(ep)
 
 

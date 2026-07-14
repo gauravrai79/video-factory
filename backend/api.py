@@ -470,6 +470,9 @@ def _episode_view(ep, channel_name: str = "", ch=None) -> dict[str, Any]:
     d["rough_cut_url"] = f"/api/episodes/{ep.episode_id}/rough-cut" if tl.get("rough_cut") else None
     d["audio_cut_url"] = f"/api/episodes/{ep.episode_id}/audio-cut" if tl.get("audio_cut") else None
     d["final_url"] = f"/api/episodes/{ep.episode_id}/final" if tl.get("final_video") else None
+    d["oneoff"] = bool((ep.config or {}).get("oneoff"))
+    d["has_voiceover"] = bool((ep.config or {}).get("voiceover_text"))
+    d["titles_url"] = f"/api/episodes/{ep.episode_id}/titles.srt" if tl.get("titles_srt") else None
     return d
 
 
@@ -496,6 +499,39 @@ def list_episodes(channel_id: str | None = None) -> list[dict[str, Any]]:
     eps = ep_store.list(_tenant(), channel_id=channel_id)
     chmap = {c.channel_id: c for c in ch_store.list(_tenant())}
     return [_episode_view(e, names.get(e.channel_id, ""), chmap.get(e.channel_id)) for e in eps]
+
+
+@app.get("/api/oneoff")
+def list_oneoff() -> list[dict[str, Any]]:
+    """List one-off 'Quick Video' projects (episodes under the hidden system channel)."""
+    from . import oneoff
+    store = JobStore()
+    ep_store = EpisodeStore(store)
+    ch = ChannelStore(store).get_by_slug(_tenant(), oneoff.ONEOFF_SLUG)
+    if not ch:
+        return []
+    eps = ep_store.list(_tenant(), channel_id=ch.channel_id)
+    return [_episode_view(e, "Quick Video", ch) for e in eps]
+
+
+@app.post("/api/oneoff")
+def create_oneoff(body: dict[str, Any]) -> dict[str, Any]:
+    """Compile a Markdown prompt-pack into a ready-to-run one-off video. Body {md, aspect?, music?,
+    resolution?, voice?}."""
+    from . import oneoff
+    md = (body or {}).get("md", "")
+    if not (md or "").strip():
+        raise HTTPException(400, "paste a script (markdown) first")
+    store = JobStore()
+    try:
+        ep = oneoff.create_from_md(store, _tenant(), md, aspect=(body or {}).get("aspect"),
+                                   music=bool((body or {}).get("music", True)),
+                                   resolution=(body or {}).get("resolution", "720p"),
+                                   voice_id=(body or {}).get("voice") or "Rachel")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    ch = ChannelStore(store).get(ep.channel_id)
+    return _episode_view(ep, "Quick Video", ch)
 
 
 @app.post("/api/episodes")
@@ -724,6 +760,17 @@ def episode_final(episode_id: str):
 @app.get("/api/episodes/{episode_id}/music")
 def episode_music(episode_id: str):
     return _episode_media(episode_id, "music")
+
+
+@app.get("/api/episodes/{episode_id}/titles.srt")
+def episode_titles(episode_id: str):
+    store = JobStore()
+    ep = EpisodeStore(store).get(episode_id)
+    path = (ep.timeline or {}).get("titles_srt") if ep else None
+    if not path or not Path(path).is_file():
+        raise HTTPException(404, "no titles file")
+    return FileResponse(path, media_type="text/plain",
+                        filename=f"{(ep.title or 'titles')[:40]}.srt")
 
 
 # --------------------------------------------------------------------------- storyboards / posts

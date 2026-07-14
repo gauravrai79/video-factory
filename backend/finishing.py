@@ -366,6 +366,7 @@ def assemble_scored(
     *,
     spec: OutputSpec | None = None,
     music_path: str | Path | None = None,
+    vo_path: str | Path | None = None,   # global narration laid over the whole cut (one-off/ad)
     music_gain: float = 0.10,          # bed sits well under the voice (was 0.16 — too loud over VO)
     pad_color: str = "black",
 ) -> FinishResult:
@@ -423,17 +424,33 @@ def assemble_scored(
         cmd = [FFMPEG, "-y"]
         for sc in scene_clips:
             cmd += ["-i", sc]
-        if music_path:
-            cmd += ["-stream_loop", "-1", "-i", str(music_path)]
         n = len(scene_clips)
+        music_idx = vo_idx = None
+        if music_path:
+            music_idx = n
+            cmd += ["-stream_loop", "-1", "-i", str(music_path)]
+        if vo_path:
+            vo_idx = n + (1 if music_path else 0)
+            cmd += ["-i", str(vo_path)]              # single continuous narration, not looped
         concat_in = "".join(f"[{i}:v][{i}:a]" for i in range(n))
         fg = f"{concat_in}concat=n={n}:v=1:a=1[cv][ca]"
-        # Normalize the final mix to YouTube loudness (-14 LUFS integrated, -1 dBTP ceiling) so
-        # episodes don't clip on peaks or vary wildly between clips (measured -15.8 LUFS / +0.9 dBTP
-        # before this). Single-pass loudnorm is accurate enough for batch delivery.
+        # Normalize the final mix to YouTube loudness (-14 LUFS integrated, -1 dBTP ceiling).
         loudnorm = "loudnorm=I=-14:TP=-1:LRA=11"
-        if music_path:
-            fg += (f";[{n}:a]volume={music_gain}[mus];"
+        if vo_idx is not None and music_idx is not None:
+            # ambient (quieter) + music DUCKED under the narration (sidechain) + full VO
+            fg += (f";[{music_idx}:a]volume={music_gain}[mus0];"
+                   f"[{vo_idx}:a]asplit=2[vomix][vosc];"
+                   f"[mus0][vosc]sidechaincompress=threshold=0.03:ratio=8:attack=5:release=300[musd];"
+                   f"[ca]volume=0.5[amb];"
+                   f"[amb][musd][vomix]amix=inputs=3:duration=first:dropout_transition=0[amix];"
+                   f"[amix]{loudnorm}[a]")
+            alabel = "[a]"
+        elif vo_idx is not None:
+            fg += (f";[ca]volume=0.6[amb];[amb][{vo_idx}:a]amix=inputs=2:duration=first:dropout_transition=0[amix];"
+                   f"[amix]{loudnorm}[a]")
+            alabel = "[a]"
+        elif music_idx is not None:
+            fg += (f";[{music_idx}:a]volume={music_gain}[mus];"
                    f"[ca][mus]amix=inputs=2:duration=first:dropout_transition=0[amix];"
                    f"[amix]{loudnorm}[a]")
             alabel = "[a]"
