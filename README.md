@@ -1,136 +1,134 @@
 # AI Influencer Factory
 
-A high-throughput media production system for **AI personalities**. Each character is a persistent,
-visually-consistent persona; the factory turns a character + a content brief into a complete,
-auto-assembled short-form post (reel / short / square), at scale, with minimal human intervention.
+A staged, human-gated studio for producing **AI video** — from a recurring cartoon/comic series with
+persistent characters to a one-off ad compiled from a Markdown script. You drive a channel or a script
+through a production line (idea → script → keyframes → video → audio → assembly), reviewing and
+re-rolling at every gate, and the factory renders a finished, downloadable cut.
 
 > This is an **orchestration project, not an ML project**. Generation is a set of API calls behind a
-> stable interface; the engineering is everything around it — character consistency, story planning,
-> a cost-aware still/video mix, deterministic assembly, a queue with SLA timers, identity QC, and an
-> auditable state machine.
+> stable interface; the engineering is everything around it — a stage-gated state machine, character
+> consistency, a keyframe/video split, script + vision QC, cost-fitting, deterministic FFmpeg
+> assembly, and per-episode format config.
 
-The repo began as an ecommerce product-video pipeline and was repurposed: the hard infrastructure
-(queue, workers, retries, cost ceiling, SLA, hash-chained audit, FFmpeg finishing, VLM QC) is reused
-almost unchanged; only the content layer is new.
+The repo began as an ecommerce product-video pipeline and was repurposed; the FFmpeg finishing,
+job store, and cost/QC scaffolding carried over, and the content layer was rebuilt around a
+character-driven, human-in-the-loop production pipeline.
 
 ---
 
-## The core idea
+## The two ways to make a video
+
+**1. A channel series** (recurring characters, many episodes)
 
 ```
-Product → Prompt → Video            (old)
-Character → Storyboard → Post       (new)
+Channel (show bible: premise · art style · cast · format)
+  └─ Episode ── Setup → Idea → Script → Refs → Scenes → Audio → Assembly → Done
+                (each stage generates its artifact, then HOLDS at a human gate)
 ```
 
-The primary entity is a **Character**. A storyboard planner expands a brief into an ordered shot
-list, and the **cost lever** is per-shot: most shots are a generated still animated by **free FFmpeg
-Ken Burns** motion; only a small budget of "hero" shots spend on paid image-to-video. A 6-shot reel
-typically costs **~$0.50–1.00** instead of $3–4 of all-video generation.
+**2. Quick Video** (a one-off, outside channels) — paste a Markdown "prompt-pack" (an ad, an
+explainer) and it compiles straight into the same Refs → Scenes → Assembly engine, honoring your
+prompts verbatim, with a global voiceover track and a timed on-screen-title `.srt`.
 
-```
-Character (persona + reference images = "DNA")
-   → Storyboard planner (brief + scene templates → shot list, each tagged still | kenburns | video)
-      → per shot:  still (Nano Banana, identity-locked)  ──┬─ kenburns → free FFmpeg pan/zoom
-                                                           └─ video    → Wan 2.5 / Kling 2.5 Turbo
-         → Assemble (stitch shots, music, optional hook/handle) → identity QC → delivered reel
-```
+Nothing runs until a human advances it; every paid stage only runs on the previous stage's approved
+artifact. That's the token-safety model.
 
-## Models (fal.ai)
+## The engine
 
-| Job | Model | Cost |
+| Job | Model / tool | Notes |
 |---|---|---|
-| Character-consistent still | **Nano Banana 2** (up to 5 people consistent, no fine-tune) | ~$0.10 / image |
-| Cheapest HD video | **Wan 2.5** (480p, default) | $0.05 / s |
-| Higher-quality video | **Kling 2.5 Turbo Pro** | $0.07 / s |
-| Ken Burns motion on a still | **FFmpeg `zoompan`** | $0.00 |
+| **Video (per scene)** | **Veo 3.1 Lite** (fal, image-to-video) | native audio in ONE pass — dialogue + lip-sync + SFX; ~$0.05/s @720p |
+| **Keyframe still** | **Nano Banana / Gemini** (OpenRouter) | character reference images + `image_config.aspect_ratio` → identity-locked, native portrait/landscape |
+| **Voiceover** | **ElevenLabs** (fal) | one clean narration track, ducked under music (one-off) |
+| **Music** | fal music gen | optional bed |
+| **Asset scenes / Ken Burns** | **FFmpeg** | real screenshots/recordings animated (pan/zoom), $0 |
 
-Single fal integration; models are config strings (`backend/capabilities/pricing.py`). Glamour/suggestive
-personas use fal's `safety_tolerance` (1–6) per character. **Synthetic personas only — never a real
-person's likeness.** Seedance is intentionally excluded (too expensive).
+Every scene is a keyframe animated by Veo: the **still carries the character/style, the video prompt
+carries only motion** (the "frozen beat / motion" split), which keeps identity stable and stops the
+model hallucinating a mid-air pose into a static frame. **Synthetic personas only — never a real
+person's likeness.**
+
+## What's in the box
+
+- **Guided channel wizard** — a one-liner becomes a name, tagline, premise and tone (LLM premise
+  assistant), and you pick the look from a **visual gallery of 31 art styles** (same mascot rendered
+  in each).
+- **Per-episode format config** (the Setup stage) — landscape/portrait (native 9:16, not cropped),
+  length → scene count, resolution, language, pacing, music, transitions, QC bar. Platform presets
+  (YouTube / Shorts / Reel / TikTok). The same channel can ship a 2-min landscape episode and a 30s
+  vertical Reel.
+- **Script QC gate** — a cross-model judge scores hook / narrative / ending / comedy / virality into
+  a 0–100 composite and drives a targeted revision loop until it passes (or parks with a scorecard).
+  It also distills a per-scene **intent contract** (`must_show`) that flows downstream.
+- **Vision QC** — each generated still and clip is checked against its intent (elements present,
+  on-model, action happened); a failure triggers one corrective re-roll and a ⚠ badge.
+- **Per-scene control** — the Scenes stage is a grid: edit any Veo prompt, generate one / selected /
+  all, re-roll, with speech-fit durations so lip-sync isn't rushed.
+- **Transition library** — per-channel reusable ~2s Veo clips, auto-spliced by cut-rhythm rules
+  (hard-cut default, only at location changes) with a human **seam editor** at assembly.
+- **Assembly** — clips (native audio) + transitions + optional music + **loudness normalization**
+  (−14 LUFS / −1 dBTP) → final MP4.
+- **Quick Video / one-off** — Markdown → video, with **asset scenes**: drop in a real product
+  screenshot or screen-recording for a specific beat (rendered with a pan so wide UI isn't cropped),
+  while AI carries the rest. Text-free master + `titles.srt` for external compositing.
 
 ## Architecture
 
 ```
 backend/
-  api.py            FastAPI: characters · storyboards · jobs · qc · media · scenes · summary
-  pipeline.py       per-post state machine: pending → generating (all shots) → finishing
-                    (assemble) → qc → approved/rework → delivered  · cost ceiling · retries
-  characters.py     Character entity + store (persona, reference images = "DNA", safety_tolerance)
-  scene_library.py  ~25 curated scene templates the planner sequences from
+  api.py              FastAPI: channels · characters · episodes · one-off · transitions · media · styles
+  episode_pipeline.py the stage state machine: run_stage / approve / reroll per stage; generation orchestration
+  episodes.py         Episode entity + store (stage, config, scenes, script_qc, timeline)
+  channels.py         Channel (show bible) + store
+  characters.py       Character (persona, reference images = identity, speaker tag)
+  formats.py          per-episode format config + platform presets + OutputSpec (aspect/resolution/length)
+  oneoff.py           Quick Video: compile a Markdown pack → an Episode under a hidden system channel
+  transitions.py      per-channel transition clip library + cut-rhythm splicer + seam overrides
+  finishing.py        deterministic FFmpeg: Ken Burns · asset pan/fit · stitch · music/VO duck · loudnorm
+  styles.py           31-style art library (+ scripts/gen_style_samples.py renders the visual gallery)
   agents/
-    storyboard.py   brief + character + templates → priced shot list (still | kenburns | video)
-    prompt_builder.py  per-shot still/motion prompts (deterministic; optional Gemini refine)
-    qc_flagger.py   identity/anatomy QC via fal vision (advisory; reference-aware)
-  capabilities/
-    fal_image.py    character-consistent stills + reference-sheet minting
-    fal_video.py    image-to-video (Wan / Kling) + shared fal queue infra
-    pricing.py      central model price table
-    cost.py         per-post + content-calendar projections
-  finishing.py      deterministic FFmpeg: Ken Burns · normalize · stitch · music · overlays · encode
-  jobqueue/         pluggable queue: in-process `sync` (default) | Redis/RQ
-  jobstore.py       SQLite today (Postgres-shaped) · hash-chained audit · idempotency
-  sla.py            tier-based SLA timers, breaches derived from the audit log
-frontend/           zero-build console: characters · new post (preview/price) · dashboard · QC · player
+    writer.py         script writer (story structure, keyframe/video split, cast auto-fix) + revision
+    script_qc.py      cross-model QC judge + intent contract
+    media_qc.py       vision QC of stills/clips against the intent (Gate 2 / Gate 3)
+    concept.py        channel-concept assistant (one-liner → name/tagline/premise/tone/styles)
+    ad_compiler.py    Markdown prompt-pack → structured scenes (verbatim prompts, VO, titles, assets)
+    shot_prompt.py    keyframe (still) + Veo (video) prompt builders
+  capabilities/       fal_video (Veo) · fal_image · or_image (Gemini) · voice (ElevenLabs) · music · pricing
+  jobstore.py         SQLite (Postgres-shaped) · hash-chained audit · idempotency
+frontend/             zero-build vanilla-JS SPA: channel wizard · workspace stepper · scene grid · Quick Video
+scripts/              serve.py · e2e_smoke.py (run before every handover) · gen_style_samples.py
 ```
-
-Every post is **idempotent** (re-running a brief reuses the job, never re-bills), **priority-ordered**
-(premium characters jump the queue), **SLA-timed**, protected by a **per-post cost ceiling**, and
-recorded in a **hash-chained audit log**. One failed video shot degrades gracefully to free Ken Burns
-rather than failing the whole post. If a character has no reference images, identity is **bootstrapped
-from the first generated still** so the rest of the post stays consistent.
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # add FAL_KEY for real generation
+cp .env.example .env     # add FAL_KEY (Veo/stills/voice) and OPENROUTER_API_KEY (writer/QC/Gemini)
 # requires ffmpeg on PATH (or set FFMPEG_BIN / FFPROBE_BIN)
 
-# Plan + price one post (dry run, no paid calls):
-python scripts/run_one.py --character samples/luna.json --brief "beach day" --tags travel,glamour
-
-# Real generation (stills + video + assembly → delivered reel):
-python scripts/run_one.py --character samples/luna.json --brief "beach day" --tags travel,glamour --execute
+python scripts/serve.py  # -> http://localhost:8310
 ```
 
-`samples/luna.json` (glamour persona) and `samples/jango.json` (a dog — characters aren't only human)
-show the character schema. Provide real photos by setting `reference_images` to local paths, or let
-the factory mint a reference sheet from `dna_prompt`.
-
-## Content calendar (batch)
+In the console: **New channel** (guided wizard) → create an episode → walk it through the stages, or
+open **Quick Video** to compile a Markdown script into a one-off. Real generation needs the API keys;
+without them every capability stubs at $0 so the whole pipeline is runnable/testable.
 
 ```bash
-# Plan a week of posts for a character, dry run, with the SLA view:
-python scripts/run_batch.py --character samples/luna.json --posts 7 --tags travel,glamour --sla
-
-# Real generation across the batch:
-python scripts/run_batch.py --character samples/luna.json --posts 7 --tags travel,glamour --execute
-
-# Production fan-out: enqueue to Redis, drain with N workers:
-VF_QUEUE_BACKEND=rq python scripts/run_batch.py --character samples/luna.json --posts 7 --enqueue-only
-VF_QUEUE_BACKEND=rq python scripts/worker.py
+python scripts/e2e_smoke.py   # drives the full pipeline in stub mode ($0); run before shipping changes
 ```
 
-## Console
+## Cost
 
-```bash
-python scripts/serve.py           # -> http://localhost:8310
-```
-
-Create characters, compose a post (preview the priced shot list before committing), watch posts run on
-the background worker, review the in-browser player + identity-QC verdict + hash-chained audit, and
-clear the human QC gate. The sync backend drains in a background thread so the UI stays responsive
-during multi-minute generations; switch to `VF_QUEUE_BACKEND=rq` for multi-worker fan-out.
+A ~2-minute episode is roughly **$4–5** (Veo scenes + a little for stills/VO/music); asset scenes and
+Ken Burns are **$0**. Every stage is idempotent (re-running never re-bills a finished scene) and gated,
+so you approve spend stage by stage.
 
 ## Status
 
-**v1 — generation only — runnable and verified.** Character store, storyboard planner, cost-mixed
-still/video generation, FFmpeg Ken Burns + multi-shot assembly, identity QC, the full state machine
-(generate → assemble → QC → deliver), idempotency, priority, SLA, and per-post hash-chained audit all
-run; the deterministic parts (planning, assembly) verified end-to-end with real FFmpeg. Deployment
-target is **Railway** (long-running workers + FFmpeg + Postgres; **not** Vercel — wrong shape for this
-workload).
+Runnable end-to-end and verified: the staged channel pipeline (idea → assembly), Quick Video one-off
+with asset scenes, script + vision QC, per-episode format config with native portrait, the transition
+library, and loudness-normalized assembly all work; `scripts/e2e_smoke.py` covers the flow in stub
+mode. Deployment target is **Railway** (long-running workers + FFmpeg + Postgres).
 
-**Next phases (not in v1):** caption/hashtag generation, auto-publishing (Instagram Graph API,
-YouTube), engagement analytics feeding back into planning, and per-character LoRA for the highest
-consistency tier.
+**Not yet:** burned-in captions, auto-publishing (YouTube / Instagram), 9:16 re-render of a landscape
+master, and analytics feeding back into ideation.
