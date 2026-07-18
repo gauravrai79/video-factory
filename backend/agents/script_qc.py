@@ -21,9 +21,12 @@ from typing import Any
 from .writer import WriterResult, _chat, _key, _parse_json
 
 WEIGHTS = {"hook": 25, "narrative": 30, "ending": 20, "comedy": 10, "virality": 15}
-DEFAULT_JUDGE_MODEL = "openai/gpt-5.5"
+# The judge scores a rubric + writes notes — a cheap capable model does this fine; a frontier model
+# (gpt-5.5 etc.) here is ~10x the cost per pass and it runs on EVERY iteration. Cross-model to the
+# usual anthropic writer, so judgment stays independent. Override with VF_JUDGE_MODEL.
+DEFAULT_JUDGE_MODEL = "google/gemini-2.5-flash"
 DEFAULT_THRESHOLD = 75.0
-MAX_ITERATIONS = 3          # total writer passes (1 original + up to 2 revisions)
+MAX_ITERATIONS = 2          # total writer passes (1 original + up to 1 auto-revision); revise more by hand
 
 
 def threshold(channel) -> float:
