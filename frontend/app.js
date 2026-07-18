@@ -497,8 +497,11 @@ function stageScript(e, gen, ro) {
 function sceneRow(s, editable) {
   const nm = (id) => (charById(id) || {}).name || "?";
   const edit = editable ? `<button class="reroll-link" data-editscene="${s.seq}">${icon("edit","icon")} edit</button>` : "";
+  const motion = s.motion || s.action || "";
+  const frame = s.frozen_beat && s.frozen_beat.trim() && s.frozen_beat !== motion;
   return `<div class="sc"><div class="h"><b>${esc(s.heading || "scene")}</b><span class="shot-tag shot-${s.shot_type}">${shotLabel(s.shot_type)}</span><small>${s.duration_s}s</small>${edit}</div>
-    <div class="act">${esc(s.action || "")}</div>${s.narration ? `<div class="vo">${icon("mic","icon")} ${esc(s.narration)}</div>` : ""}
+    ${frame ? `<div class="act"><span class="sc-lbl">Frame</span>${esc(s.frozen_beat)}</div>` : ""}
+    <div class="act">${frame ? `<span class="sc-lbl">Action</span>` : ""}${esc(motion)}</div>${s.narration ? `<div class="vo">${icon("mic","icon")} ${esc(s.narration)}</div>` : ""}
     ${(s.dialogue || []).map((d) => `<div class="line"><b>${esc(nm(d.speaker))}</b>: ${esc(d.line)}${d.delivery ? ` <em>(${esc(d.delivery)})</em>` : ""}</div>`).join("")}</div>`;
 }
 function modalScene(seq) {
@@ -510,7 +513,8 @@ function modalScene(seq) {
       <div class="field"><label>Line (${esc(S.ep.language || "")})</label><input class="d-line" value="${esc(d.line || "")}"/></div></div>`).join("");
   const body = `
     <div class="field"><label>Heading (location - time)</label><input id="s-head" value="${esc(s.heading || "")}"/></div>
-    <div class="field"><label>Action — the cinematic shot (blocking, expressions, props, lighting)</label><textarea id="s-act" rows="4">${esc(s.action || "")}</textarea></div>
+    <div class="field"><label>Frame — the keyframe still: setup, who's where, props, expressions, lighting (no motion words)</label><textarea id="s-frozen" rows="4">${esc(s.frozen_beat || s.action || "")}</textarea></div>
+    <div class="field"><label>Action — what MOVES in the shot: the motion + comic timing</label><textarea id="s-act" rows="3">${esc(s.motion || s.action || "")}</textarea></div>
     <div class="row-3"><div class="field"><label>Camera</label><input id="s-cam" value="${esc(s.camera || "")}"/></div>
       <div class="field"><label>Shot type</label><select id="s-shot">${opts(s.shot_type, shots, (x) => x, shotLabel)}</select></div>
       <div class="field"><label>Duration (s)</label><input type="number" step="0.5" id="s-dur" value="${s.duration_s || 5}"/></div></div>
@@ -519,8 +523,9 @@ function modalScene(seq) {
   openModal(`Edit scene ${seq + 1}`, body, async () => {
     const scenes = (S.ep.scenes || []).map((x) => ({ ...x }));
     const ns = scenes[seq];
-    ns.heading = $("#s-head").value; ns.action = $("#s-act").value; ns.camera = $("#s-cam").value;
-    ns.motion = ns.action; ns.frozen_beat = "";   // backend re-derives the still-safe frozen beat
+    ns.heading = $("#s-head").value; ns.camera = $("#s-cam").value;
+    ns.motion = ns.action = $("#s-act").value;     // Action = motion; action kept for legacy paths
+    ns.frozen_beat = $("#s-frozen").value;         // your explicit keyframe (backend re-derives only if it has motion words)
     ns.shot_type = $("#s-shot").value; ns.duration_s = +$("#s-dur").value; ns.narration = $("#s-narr").value;
     ns.dialogue = [...document.querySelectorAll("#s-dlg [data-dlg]")].map((r, i) => ({
       speaker: r.querySelector(".d-spk").value, line: r.querySelector(".d-line").value.trim(),

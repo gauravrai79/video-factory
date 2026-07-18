@@ -111,9 +111,16 @@ def judge(channel, cast_chars: list, idea: dict[str, Any], scenes: list[dict]) -
 
 
 def attach_intents(scenes: list[dict], intents: list[dict]) -> None:
-    by_seq = {i.get("seq"): i for i in (intents or []) if isinstance(i, dict)}
-    for s in scenes:
-        i = by_seq.get(s.get("seq"))
+    """Map the judge's per-scene intents onto scenes. The judge returns them in scene order (and
+    tends to 1-index its `seq` to match the '#N' digest), so when the counts match we pair BY ORDER —
+    this fixes the off-by-one that attached scene N's must_show to scene N+1."""
+    intents = [i for i in (intents or []) if isinstance(i, dict)]
+    if intents and len(intents) == len(scenes):
+        pairs = list(zip(scenes, intents))          # full coverage -> pair by order (fixes off-by-one)
+    else:
+        by_seq = {i.get("seq"): i for i in intents}  # partial -> exact seq match only
+        pairs = [(s, by_seq.get(s.get("seq"))) for s in scenes]
+    for s, i in pairs:
         if i:
             s["intent"] = {"purpose": (i.get("purpose") or "")[:200],
                            "must_show": [str(x)[:120] for x in (i.get("must_show") or [])][:3],
