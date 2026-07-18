@@ -832,6 +832,41 @@ def reject_stage(store, ep: Episode, *, reason: str = "") -> Episode:
     return eps.update(ep)
 
 
+def revise_script_stage(store, ep: Episode, *, notes: list[str] | None = None) -> Episode:
+    """Targeted revision of the CURRENT script (not a fresh rewrite): apply the QC judge's notes —
+    plus any extra direction the human adds — to the parked script, then re-judge. Replaces the script
+    with the revision and updates the scorecard, staying at the script gate."""
+    from . import formats
+    from .agents import script_qc
+    eps, chs, cs, ch, cast = _ctx(store, ep)
+    if ep.stage != Stage.SCRIPT.value or not ep.scenes:
+        raise StageError("no script to revise")
+    cfg = formats.episode_config(ep, ch)
+    thr = float(cfg.get("qc_threshold") or script_qc.threshold(ch))
+    use_notes = [n for n in (notes or []) if str(n).strip()] or (ep.script_qc or {}).get("notes") or []
+    rev = writer.revise_script(ch, cast, ep.idea, ep.scenes, use_notes, model=ep.writer_model)
+    if not rev.ok:
+        return _fail(eps, ep, rev.error or "revision failed")
+    _bill(ep, rev)
+    scenes = rev.data["scenes"]
+    prev_iters = (ep.script_qc or {}).get("iterations", 1)
+    q = script_qc.judge(ch, cast, ep.idea, scenes)
+    if q.ok:
+        _bill(ep, q)
+        qc = {**q.data, "iterations": prev_iters + 1, "threshold": thr, "judge_model": q.model}
+        qc["passed"] = bool((qc.get("score") or 0) >= thr)
+        ep.scenes = scenes
+        script_qc.attach_intents(ep.scenes, qc.pop("intents", []))
+        ep.script_qc = qc
+    else:                                    # judge outage: keep the revision, unscored
+        ep.scenes = scenes
+        ep.script_qc = {**(ep.script_qc or {}), "iterations": prev_iters + 1, "error": q.error}
+    ep.refs_batch_done = False
+    ep.stage_status = StageStatus.AWAITING_REVIEW.value
+    ep.log("script_revised", {"score": (ep.script_qc or {}).get("score"), "note_count": len(use_notes)})
+    return eps.update(ep)
+
+
 def edit_artifact(store, ep: Episode, *, idea: dict[str, Any] | None = None,
                   scenes: list[dict[str, Any]] | None = None) -> Episode:
     """Hand-edit the current artifact in place (the Edit gate action)."""

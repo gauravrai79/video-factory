@@ -419,6 +419,19 @@ function stageSetup(e, gen, ro) {
     </div>`;
 }
 
+function modalRevise() {
+  const q = S.ep.script_qc || {};
+  const notes = (q.notes || []).join("\n");
+  const body = `<p class="hint">The writer will apply these notes to the <b>current</b> script (not start over), then re-score it. Edit them or add your own direction — one note per line.</p>
+    <div class="field"><label>Feedback / direction</label><textarea id="rev-notes" rows="10">${esc(notes)}</textarea></div>`;
+  openModal("Revise with feedback", body, async () => {
+    $("#m-msg").className = "hint"; $("#m-msg").textContent = "Revising + re-judging… (up to a minute)";
+    S.ep = await jpost(`/api/episodes/${S.ep.episode_id}/script/revise`,
+                       { notes: $("#rev-notes").value.split("\n").map((x) => x.trim()).filter(Boolean) });
+    render(); managePolling(); toast(`Revised — QC now ${(S.ep.script_qc || {}).score ?? "?"}/100`);
+  }, "Revise this script");
+}
+
 /* --- Idea --- */
 function stageIdea(e, gen, ro) {
   if (ro) return e.idea && e.idea.title
@@ -468,9 +481,12 @@ function stageScript(e, gen, ro) {
     : `<p class="muted">No script recorded.</p>`;
   const chosen = e.idea && e.idea.title ? `<div class="stage-intro"><b>${esc(e.idea.title)}</b> — ${esc(e.idea.logline || "")}</div>` : "";
   if (e.stage_status === "awaiting_review" && e.scenes.length) {
+    const hasNotes = ((e.script_qc || {}).notes || []).length;
     const bar = gen
-      ? `<div class="stage-intro">${spin()} Rewriting + QC-judging the script… (may take a minute — it revises until it passes)</div>`
-      : actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve script</button>`, `<button class="btn btn-ghost" data-run>${icon("refresh")} Rewrite all</button>`]);
+      ? `<div class="stage-intro">${spin()} Writing + QC-judging the script… (may take a minute — it revises until it passes)</div>`
+      : actionBar([`<button class="btn btn-primary" data-approve>${icon("check")} Approve script</button>`,
+          ...(hasNotes ? [`<button class="btn btn-ghost" data-revise>${icon("sparkles")} Revise with feedback</button>`] : []),
+          `<button class="btn btn-ghost" data-run>${icon("refresh")} Rewrite from scratch</button>`]);
     return `${chosen}${gen ? "" : qcScorecard(e)}<div class="section-title" style="margin-top:0">Script — ${e.scenes.length} scenes ${gen ? "" : `<small class="muted">· click <b>edit</b> on any scene</small>`}</div>
       <div class="script"${gen ? ' style="opacity:.45;pointer-events:none"' : ""}>${e.scenes.map((s) => sceneRow(s, !gen)).join("")}</div>
       ${bar}`;
@@ -734,7 +750,7 @@ async function epAct(fn, optimisticGen) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans],[data-scenegen],[data-selscene],[data-selall],[data-genselected],[data-genremaining],[data-skipmusic],[data-saveseams],[data-saveconfig],[data-delchannel],[data-qvcreate]");
+  const t = ev.target.closest("[data-nav],[data-dd],[data-selchan],[data-newchannel],[data-editchannel],[data-newchar],[data-editchar],[data-uploadref],[data-newep],[data-delep],[data-runidea],[data-pickidea],[data-run],[data-approve],[data-runrefs],[data-refsbatch],[data-reroll],[data-reopen],[data-editscene],[data-delref],[data-refedit],[data-gentrans],[data-deltrans],[data-scenegen],[data-selscene],[data-selall],[data-genselected],[data-genremaining],[data-skipmusic],[data-saveseams],[data-saveconfig],[data-delchannel],[data-qvcreate],[data-revise]");
   // close dropdown on outside click
   if (!ev.target.closest(".dropdown,[data-dd]") && S.ddOpen) { S.ddOpen = false; const d = $(".dropdown"); if (d) d.remove(); }
   if (!t) return;
@@ -783,6 +799,7 @@ document.addEventListener("click", async (ev) => {
     if (!confirm(`Generate ${seqs.length} scene(s) (~$${(seqs.length * SCENE_UNIT).toFixed(2)})?`)) return;
     return epAct(async () => { const r = await jpost(`/api/episodes/${S.ep.episode_id}/scenes/generate`, { seqs }); S.sceneSel = new Set(); return r; }, true);
   }
+  if (d.revise !== undefined) return modalRevise();
   if (d.qvcreate !== undefined) return quickCreate();
   if (d.saveconfig !== undefined) {
     const body = { platform: S.setupPreset, layout: $("#cfg-layout").value, duration_s: +$("#cfg-duration").value,

@@ -637,6 +637,14 @@ def edit_artifact(episode_id: str, body: dict[str, Any]) -> dict[str, Any]:
         s, e, idea=body.get("idea"), scenes=body.get("scenes")))
 
 
+@app.post("/api/episodes/{episode_id}/script/revise")
+def revise_script(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Apply the QC feedback (plus optional human direction) to the CURRENT script and re-judge —
+    a targeted revision, not a from-scratch rewrite. Body {notes: [str]}."""
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.revise_script_stage(
+        s, e, notes=(body or {}).get("notes")))
+
+
 @app.post("/api/episodes/{episode_id}/reopen")
 def reopen_stage(episode_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     """Re-open a previously-approved stage (e.g. script) to edit or re-run it."""

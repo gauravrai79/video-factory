@@ -439,7 +439,10 @@ def _normalize_scenes(scenes: list[dict], channel, cast_chars: list | None = Non
             st = "broll"
         if st == "hero_video":
             if videos >= channel.video_budget:
-                st = "still_kenburns"          # action over budget -> pan the still (rare)
+                # over the hero-video budget: a CHARACTER-free scene can drop to a cheap still pan,
+                # but a scene WITH cast must stay in motion (still_kenburns is for char-free shots
+                # only) — so bump it to lipsync_still, never a cast still.
+                st = "lipsync_still" if cast else "still_kenburns"
             else:
                 videos += 1
         beat = s.get("beat_type") if s.get("beat_type") in BEAT_TYPES else (
