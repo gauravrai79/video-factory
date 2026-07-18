@@ -92,6 +92,7 @@ class Episode:
     scenes: list[dict[str, Any]] = field(default_factory=list)  # list of Scene dicts
     style_note: str = ""                                    # applied to every scene's still prompt
     script_qc: dict[str, Any] = field(default_factory=dict)  # judge scorecard {score, breakdown, notes, iterations, passed}
+    script_prev: dict[str, Any] = field(default_factory=dict)  # prior {scenes, script_qc} for one-click revert
     refs_batch_done: bool = False                           # preview approved -> full batch generated
     timeline: dict[str, Any] = field(default_factory=dict)  # the editable EDL (built at assembly)
     history: list[dict[str, Any]] = field(default_factory=list)  # stage/gate action trail

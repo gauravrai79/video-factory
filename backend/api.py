@@ -472,6 +472,8 @@ def _episode_view(ep, channel_name: str = "", ch=None) -> dict[str, Any]:
     d["rough_cut_url"] = f"/api/episodes/{ep.episode_id}/rough-cut" if tl.get("rough_cut") else None
     d["audio_cut_url"] = f"/api/episodes/{ep.episode_id}/audio-cut" if tl.get("audio_cut") else None
     d["final_url"] = f"/api/episodes/{ep.episode_id}/final" if tl.get("final_video") else None
+    prev = ep.script_prev or {}   # slim (don't ship the whole prior script to the client)
+    d["script_prev"] = {"scenes": len(prev.get("scenes") or []), "score": (prev.get("script_qc") or {}).get("score")}
     d["oneoff"] = bool((ep.config or {}).get("oneoff"))
     d["has_voiceover"] = bool((ep.config or {}).get("voiceover_text"))
     d["titles_url"] = f"/api/episodes/{ep.episode_id}/titles.srt" if tl.get("titles_srt") else None
@@ -643,6 +645,12 @@ def revise_script(episode_id: str, body: dict[str, Any] | None = None) -> dict[s
     a targeted revision, not a from-scratch rewrite. Body {notes: [str]}."""
     return _episode_action(episode_id, lambda s, e: episode_pipeline.revise_script_stage(
         s, e, notes=(body or {}).get("notes")))
+
+
+@app.post("/api/episodes/{episode_id}/script/revert")
+def revert_script(episode_id: str) -> dict[str, Any]:
+    """Undo the last rewrite/revise — restore the stashed previous script (itself undoable)."""
+    return _episode_action(episode_id, lambda s, e: episode_pipeline.revert_script(s, e))
 
 
 @app.post("/api/episodes/{episode_id}/reopen")

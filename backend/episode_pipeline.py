@@ -519,6 +519,7 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
         from . import formats
         from .agents import script_qc
         cfg = formats.episode_config(ep, ch)
+        prior_scenes, prior_qc = list(ep.scenes or []), dict(ep.script_qc or {})   # for revert
         res = writer.script(ch, cast, ep.idea, model=ep.writer_model, cfg=cfg)
         if not res.ok:
             # a REWRITE that fails (e.g. out of credits) must not discard the script you already have
@@ -553,6 +554,8 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
             best_qc["passed"] = bool((best_qc.get("score") or 0) >= thr)
             script_qc.attach_intents(ep.scenes, best_qc.pop("intents", []))
             ep.script_qc = best_qc
+        if prior_scenes:                    # a rewrite -> stash the prior script so it can be reverted
+            ep.script_prev = {"scenes": prior_scenes, "script_qc": prior_qc}
         ep.refs_batch_done = False          # fresh script -> old reference batch is invalid
         ep.stage_status = StageStatus.AWAITING_REVIEW.value
         ep.log("script", {"scenes": len(ep.scenes), "model": res.model, "stub": res.stubbed,
@@ -845,6 +848,7 @@ def revise_script_stage(store, ep: Episode, *, notes: list[str] | None = None) -
         raise StageError("no script to revise")
     cfg = formats.episode_config(ep, ch)
     thr = float(cfg.get("qc_threshold") or script_qc.threshold(ch))
+    prior_scenes, prior_qc = list(ep.scenes or []), dict(ep.script_qc or {})   # for revert
     use_notes = [n for n in (notes or []) if str(n).strip()] or (ep.script_qc or {}).get("notes") or []
     rev = writer.revise_script(ch, cast, ep.idea, ep.scenes, use_notes, model=ep.writer_model)
     if not rev.ok:
@@ -863,9 +867,29 @@ def revise_script_stage(store, ep: Episode, *, notes: list[str] | None = None) -
     else:                                    # judge outage: keep the revision, unscored
         ep.scenes = scenes
         ep.script_qc = {**(ep.script_qc or {}), "iterations": prev_iters + 1, "error": q.error}
+    ep.script_prev = {"scenes": prior_scenes, "script_qc": prior_qc}   # stash so a worse revise is undoable
     ep.refs_batch_done = False
     ep.stage_status = StageStatus.AWAITING_REVIEW.value
-    ep.log("script_revised", {"score": (ep.script_qc or {}).get("score"), "note_count": len(use_notes)})
+    ep.log("script_revised", {"score": (ep.script_qc or {}).get("score"), "note_count": len(use_notes),
+                              "prev_score": prior_qc.get("score")})
+    return eps.update(ep)
+
+
+def revert_script(store, ep: Episode) -> Episode:
+    """One-click undo: swap the current script with the stashed previous one (so revert is itself
+    undoable). Used when a rewrite/revise scored worse and you want the earlier version back."""
+    eps = EpisodeStore(store)
+    prev = ep.script_prev or {}
+    if not prev.get("scenes"):
+        raise StageError("no previous script to revert to")
+    current = {"scenes": list(ep.scenes or []), "script_qc": dict(ep.script_qc or {})}
+    ep.scenes = prev["scenes"]
+    ep.script_qc = prev.get("script_qc") or {}
+    ep.script_prev = current               # swap -> the revert can be undone again
+    ep.refs_batch_done = False
+    ep.stage_status = StageStatus.AWAITING_REVIEW.value
+    ep.stage_error = ""
+    ep.log("script_reverted", {"score": (ep.script_qc or {}).get("score")})
     return eps.update(ep)
 
 
