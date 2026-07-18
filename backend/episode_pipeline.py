@@ -521,7 +521,9 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
         cfg = formats.episode_config(ep, ch)
         res = writer.script(ch, cast, ep.idea, model=ep.writer_model, cfg=cfg)
         if not res.ok:
-            return _fail(eps, ep, res.error or "scripting failed")
+            # a REWRITE that fails (e.g. out of credits) must not discard the script you already have
+            return _fail_keep_review(eps, ep, res.error or "scripting failed") if ep.scenes \
+                else _fail(eps, ep, res.error or "scripting failed")
         _bill(ep, res)
         # QC gate: judge -> (below threshold) targeted revision with the judge's notes -> re-judge,
         # up to MAX_ITERATIONS writer passes. The best-scoring version parks at the human gate with
@@ -846,7 +848,7 @@ def revise_script_stage(store, ep: Episode, *, notes: list[str] | None = None) -
     use_notes = [n for n in (notes or []) if str(n).strip()] or (ep.script_qc or {}).get("notes") or []
     rev = writer.revise_script(ch, cast, ep.idea, ep.scenes, use_notes, model=ep.writer_model)
     if not rev.ok:
-        return _fail(eps, ep, rev.error or "revision failed")
+        return _fail_keep_review(eps, ep, rev.error or "revision failed")   # keep the current script
     _bill(ep, rev)
     scenes = rev.data["scenes"]
     prev_iters = (ep.script_qc or {}).get("iterations", 1)
@@ -911,6 +913,15 @@ def _fail(eps: EpisodeStore, ep: Episode, msg: str) -> Episode:
     ep.stage_status = StageStatus.PENDING.value
     ep.stage_error = msg
     ep.log("stage_error", {"error": msg})
+    return eps.update(ep)
+
+
+def _fail_keep_review(eps: EpisodeStore, ep: Episode, msg: str) -> Episode:
+    """Surface an error but KEEP the existing approved-pending artifact visible (awaiting_review) —
+    used when a re-generation/revision fails so it never hides the artifact you already had."""
+    ep.stage_status = StageStatus.AWAITING_REVIEW.value
+    ep.stage_error = msg
+    ep.log("stage_error", {"error": msg, "kept_prior_artifact": True})
     return eps.update(ep)
 
 
