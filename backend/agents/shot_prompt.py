@@ -41,24 +41,23 @@ def reference_still_prompt(scene: dict, present: list[Character], channel: Chann
         camera = ""
     if present:
         who = "; ".join(c.look_descriptor() for c in present)
-        subject = (f"Render {who} in a {style} art style — keep each character's identity from the "
-                   f"reference images but restyle them to fully match this art style. "
-                   f"Natural proportions")
+        # NO repeat of the art-style string here (it already leads the prompt) — repetition bloats it.
+        subject = (f"Render {who}, keeping each character's identity from the reference images but "
+                   f"restyled to fully match this art style. Natural proportions")
     else:
-        subject = f"Atmospheric establishing shot, no characters, in a {style} art style"
+        subject = "Atmospheric establishing shot, no characters"
     world_line = (f"Setting — {setting}. Single consistent light source — every element shares the "
-                  f"same lighting and ink-line rendering so nothing looks composited"
-                  if setting else "Single consistent light source — every element shares the same "
-                                  "lighting and rendering so nothing looks composited")
-    frozen_line = f"Frozen beat (stable, at rest): {frozen}" if frozen else ""
-    intent = scene.get("intent") or {}
-    must = "; ".join(intent.get("must_show") or [])
-    intent_line = f"The frame MUST clearly show: {must}" if must else ""
-    mood_line = f"Mood: {intent['mood']}" if intent.get("mood") else ""
-    compo = f"Composition: {camera}. One continuous ground plane — all characters and props share the same floor" \
-        if camera else "One continuous ground plane — all characters and props share the same floor"
+                  f"same lighting so nothing looks composited"
+                  if setting else "Single consistent light source so nothing looks composited")
+    frozen_line = f"Frozen beat (one stable instant, at rest): {frozen}" if frozen else ""
+    # NOTE: intent.must_show is the scene/MOTION contract (it contains action verbs) — injecting it
+    # into a STILL made the model draw one character several times (once per action). It belongs in
+    # the video prompt + QC only, never in the keyframe. A short mood word is fine.
+    mood_line = f"Mood: {(scene.get('intent') or {}).get('mood')}" if (scene.get("intent") or {}).get("mood") else ""
+    compo = f"Composition: {camera}. One continuous ground plane — all characters share the same floor" \
+        if camera else "One continuous ground plane — all characters share the same floor"
     prompt = ". ".join(p for p in [f"Art style: {style}", world_line, heading, subject,
-                                   frozen_line, intent_line, mood_line, framing, compo, _FOOTER_STILL] if p)
+                                   frozen_line, mood_line, framing, compo, _FOOTER_STILL] if p)
     refs = [p for c in present for p in c.reference_images]
     return prompt, refs
 

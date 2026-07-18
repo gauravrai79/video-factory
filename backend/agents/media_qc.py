@@ -53,7 +53,7 @@ def _contract(scene: dict, present_names: list[str], *, is_clip: bool) -> str:
         f"Scene beat: {beat}",
         f"Characters that must be on screen: {', '.join(present_names) or 'none'}",
     ]
-    if must:
+    if must and is_clip:      # must_show holds scene ACTIONS — only meaningful for the clip, not the still
         lines.append(f"MUST clearly show: {must}")
     if intent.get("mood"):
         lines.append(f"Mood: {intent['mood']}")
