@@ -305,7 +305,11 @@ def script(channel, cast_chars: list, idea: dict[str, Any], *, model: str | None
         "cast_present (character_ids on screen — EVERY character visible in the shot), dialogue "
         "(list of {speaker, line, delivery}), narration (VO text, may be empty), shot_type, "
         "duration_s, location_id, time_jump, beat_type.\n"
-        f"Every `line` and `narration` value MUST be written in {language}.\n"
+        f"LANGUAGE — this matters for whether the video renders correctly: write ALL visual "
+        f"description fields (frozen_beat, motion, camera, heading) in clear ENGLISH — the image and "
+        f"video models understand English prompts far better and misread mixed Hindi/English. Write "
+        f"ONLY the SPOKEN content — every `line` and every `narration` — in {language} (that is the "
+        f"actual audio). Do NOT mix languages inside a field.\n"
         "Respond with ONLY JSON, no prose:\n"
         '{"scenes": [{"heading": "...", "frozen_beat": "...", "motion": "...", "camera": "...", '
         '"cast_present": ["id"], "dialogue": [{"speaker": "id", "line": "...", "delivery": "..."}], '
@@ -344,8 +348,9 @@ def revise_script(channel, cast_chars: list, idea: dict[str, Any], scenes: list[
         "works (do not rewrite scenes the notes don't touch unless required for causality):\n- "
         + "\n- ".join(str(x) for x in notes[:8]) + "\n\n"
         + _story_rules(n) + _SHOT_RULES.format(budget=channel.video_budget) +
-        f"Keep EXACTLY {n} scenes and the same JSON schema as the draft. Every `line` and "
-        f"`narration` in {getattr(channel, 'language', 'English')}.\n"
+        f"Keep EXACTLY {n} scenes and the same JSON schema as the draft. Write all VISUAL fields "
+        f"(frozen_beat, motion, camera, heading) in ENGLISH; write ONLY `line` and `narration` in "
+        f"{getattr(channel, 'language', 'English')}. Never mix languages inside a field.\n"
         "Respond with ONLY JSON: {\"scenes\": [...]}")
     try:
         text, usage = _chat(system, user, model, temperature=0.6, max_tokens=10000)

@@ -85,9 +85,9 @@ def veo_prompt(scene: dict, present: list[Character], channel: Channel) -> str:
              "scene's art style locked"]
     if motion:
         parts.append(f"Action: {motion}")
-    must = "; ".join((scene.get("intent") or {}).get("must_show") or [])
-    if must:
-        parts.append(f"The shot must clearly show: {must}")
+    # NOTE: intent.must_show (a prop/element checklist) used to be injected here, but the model
+    # over-fixated on the listed objects (e.g. it turned a protest into a 'samosa' scene). The motion
+    # already describes the shot; must_show stays in QC only, not in the generation prompt.
     if scene.get("camera"):
         parts.append(f"Camera: {scene['camera']}")
     dlg = next((d for d in (scene.get("dialogue") or [])
