@@ -45,7 +45,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 def unit_checks() -> None:
     """Pure-function checks for the keyframe linter / frozen-beat fallback / transition splicer."""
-    from backend.agents.writer import lint_keyframe, freeze_beat, _location_id
+    from backend.agents.writer import lint_keyframe, freeze_beat, _location_id, _story_rules
     from backend import transitions as tr
     from backend.finishing import ScoredShot
 
@@ -102,7 +102,10 @@ def unit_checks() -> None:
     check("portrait spec 720x1280", (ps.width, ps.height) == (720, 1280))
     check("veo aspect portrait 9:16", formats.veo_aspect("portrait") == "9:16" and formats.veo_aspect("landscape") == "16:9")
     check("portrait framing hint is vertical", "9:16" in formats.framing_hint({"layout": "portrait"}))
-    check("scene count derived from length", formats.default_scene_count(120) == 20 and formats.default_scene_count(30) == 5)
+    # ~7.5s beats -> fewest cuts (each cut is another independent generation = another continuity risk)
+    check("scene count derived from length", formats.default_scene_count(120) == 16 and formats.default_scene_count(30) == 4)
+    check("short-form rules force one location + <=2 speakers",
+          "ONE single location" in _story_rules(5, duration_s=40) and "ACT 1" in _story_rules(16, duration_s=120))
     check("presets include youtube + reel", {"youtube_long", "instagram_reel"} <= set(formats.PLATFORM_PRESETS))
     check("config back-compat for un-configured episode", formats.episode_config(Episode(episode_id="z", channel_id="c", number=1), _C())["layout"] == "landscape")
 

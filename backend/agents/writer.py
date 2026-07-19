@@ -222,10 +222,25 @@ _SHOT_RULES = (
 
 
 def _story_rules(n: int, *, hook_s: int = 5, pacing: str = "balanced", duration_s: int = 120) -> str:
-    a1 = max(2, round(n * 0.2)); a2 = max(3, round(n * 0.4)); a3 = max(2, round(n * 0.25))
     pace = {"dialogue": "Lean on character dialogue and reactions; fewer big action set-pieces.",
             "action": "Lean on visual gags, motion and physical comedy; keep talking terse.",
             "balanced": "Balance dialogue beats with visual action."}.get(pacing, "")
+    # SHORT-FORM: a 30-60s short cannot carry a 3-act episode. Every extra location and speaker is a
+    # continuity break the video models cannot hold — so force one place, one gag, ≤2 speakers.
+    if duration_s <= 75 or n <= 7:
+        return (
+            f"SHORT-FORM STRUCTURE (a ~{duration_s}s short — this is NOT a multi-act episode). {pace}\n"
+            f"- ONE single location for the WHOLE short. Do NOT change location between scenes — it must "
+            f"read as one continuous place. Describe that same place consistently in every frozen_beat.\n"
+            f"- AT MOST 2 speaking characters in the entire short; everyone else is background.\n"
+            f"- ONE comic premise only: quick setup -> escalation -> punchline. No subplots, no "
+            f"investigation montage, no time jumps.\n"
+            f"- Scene 1 must land the premise VISUALLY within the first {hook_s} seconds.\n"
+            f"- The LAST scene is the punchline plus one short quotable line — end on the laugh, never "
+            f"explain it.\n"
+            f"- Give every scene the SAME `location_id`.\n"
+            f"DIALOGUE: every line under 80 characters (~6s speakable).\n")
+    a1 = max(2, round(n * 0.2)); a2 = max(3, round(n * 0.4)); a3 = max(2, round(n * 0.25))
     hookline = (f"- HOOK (scene 1): grab within the FIRST {hook_s} SECONDS — open ON the gag/problem, "
                 f"no establishing ramp. " + ("For a short vertical video the very first frame must be "
                 "arresting and the payoff must land fast.\n" if hook_s <= 2 else "\n"))

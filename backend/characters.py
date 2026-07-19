@@ -110,6 +110,12 @@ class Character:
         line = ", ".join(b for b in bits if b)
         return line or who
 
+    def voice_description(self) -> str:
+        """How this character SOUNDS, in words. Veo generates each clip independently and has no
+        voice memory, so the same character drifts to a different voice every scene — injecting a
+        fixed description into every video prompt keeps it recognisably the same character."""
+        return ((self.voice or {}).get("description") or "").strip()
+
     def speaker_tag(self) -> str:
         """Short VISUAL tag for dialogue attribution in video prompts (\"the small fawn French
         bulldog\") — a name alone means nothing to the model; with two characters in frame the
@@ -117,9 +123,14 @@ class Character:
         appearance = ((self.persona or {}).get("appearance") or self.dna_prompt or "").strip()
         if not appearance:
             return self.name
-        # first ~8 words, article normalized to "the"
-        words = appearance.split()
-        head = " ".join(words[:8]).rstrip(",;.")
+        words = appearance.split()[:10]
+        # cut AT the first connective so the tag is a complete noun phrase, never a dangling
+        # fragment like "...bulldog with a compact"
+        for i, w in enumerate(words):
+            if i >= 2 and w.lower().strip(",;.") in ("with", "wearing", "and", "in", "holding", "carrying"):
+                words = words[:i]
+                break
+        head = " ".join(words).rstrip(",;.")
         for art in ("a ", "an ", "the "):
             if head.lower().startswith(art):
                 head = head[len(art):]

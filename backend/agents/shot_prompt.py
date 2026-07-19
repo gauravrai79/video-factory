@@ -98,8 +98,11 @@ def veo_prompt(scene: dict, present: list[Character], channel: Channel) -> str:
         tag = spk.speaker_tag() if spk else "the character"
         delivery = (dlg.get("delivery") or "").strip()
         dtag = f", {delivery}" if delivery else ""
+        # a FIXED voice description per character — without it Veo invents a new voice every clip
+        vdesc = spk.voice_description() if spk else ""
+        vtag = f" The voice is {vdesc}." if vdesc else ""
         parts.append(f'One short spoken line — {tag} says out loud in {lang}{dtag}, with accurate '
-                     f'lip-sync: "{dlg["line"].strip()}"')
+                     f'lip-sync: "{dlg["line"].strip()}".{vtag}')
     elif narr:
         parts.append(f'No character speaks on screen. A warm narrator voiceover says in {lang}: "{narr}"')
     else:

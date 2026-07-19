@@ -36,8 +36,10 @@ PLATFORM_PRESETS: dict[str, dict[str, Any]] = {
 
 
 def default_scene_count(duration_s: float) -> int:
-    """~one beat per ~6s, clamped to a sane 3-30."""
-    return max(3, min(30, round(float(duration_s or 60) / 6.0)))
+    """~one beat per ~7.5s, clamped to 3-30. Veo caps a clip at 8s, so aiming near that gives the
+    FEWEST cuts for a given length — every extra cut is another independently-generated shot and
+    another chance for the world to look different, so fewer/longer beats read as more coherent."""
+    return max(3, min(30, round(float(duration_s or 60) / 7.5)))
 
 
 def episode_config(ep, ch) -> dict[str, Any]:

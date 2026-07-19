@@ -109,7 +109,11 @@ def _image_gen(*, prompt: str, output_path: str, reference_image_urls, model: st
 
 def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
                      out_dir: Path, *, prompt_override: str | None = None, style_note: str = "",
-                     model: str | None = None, framing: str = "", aspect_ratio: str = "16:9") -> tuple[dict, float]:
+                     model: str | None = None, framing: str = "", aspect_ratio: str = "16:9",
+                     location_ref: str | None = None) -> tuple[dict, float]:
+    """`location_ref` is an earlier still of the SAME location — passed as an extra reference so a
+    recurring place stays the same place across independently-generated scenes (the #1 cause of an
+    incoherent cut: every scene inventing its own version of the same street)."""
     present = shot_prompt.scene_cast(scene, cast_map)
     prompt, refs = shot_prompt.reference_still_prompt(scene, present, ch, framing=framing)
     # A one-off/ad scene carries the author's exact keyframe prompt — honor it verbatim.
@@ -120,6 +124,11 @@ def _gen_scene_still(scene: dict, cast_map: dict[str, Character], ch: Channel,
         prompt = stored_override
     if style_note:
         prompt = f"{prompt} {style_note}"
+    if location_ref and Path(location_ref).is_file():
+        refs = list(refs) + [location_ref]
+        prompt = (prompt + " CONTINUITY — one of the reference images is an earlier shot of THIS "
+                  "EXACT SAME location: reproduce the same place, architecture, background, signage, "
+                  "props and time of day; only the camera angle and the characters' action change.")
     safety = max([c.safety_tolerance for c in present], default=5)
     path = str(out_dir / "stills" / f"{scene['seq']:03d}.png")
     model = model or pricing.default_image_model()
@@ -669,11 +678,24 @@ def generate_refs_batch(store, ep: Episode, *, style_note: str | None = None) ->
     est = round(len(pending) * pricing.image_cost(pricing.default_image_model()), 4)
     if est > episode_ceiling_usd():
         raise StageError(f"batch est ${est} over episode ceiling ${episode_ceiling_usd()}")
+    # LOCATION CONTINUITY: the first good still for a location becomes that place's master, and every
+    # later scene in the same location gets it as an extra reference — otherwise each scene invents
+    # its own version of the "same" street and the cut falls apart.
+    aspect = formats.veo_aspect(formats.episode_config(ep, ch)["layout"])
+    masters: dict[str, str] = {}
+    for s in ep.scenes:
+        loc, ri = s.get("location_id"), (s.get("reference_image") or {})
+        if loc and ri.get("status") == "ok" and ri.get("path") and loc not in masters:
+            masters[loc] = ri["path"]          # seed from the approved preview / already-done stills
     spent, failed = 0.0, 0
     for scene in pending:
+        loc = scene.get("location_id")
         info, cost = _gen_scene_still(scene, cast_map, ch, out_dir, style_note=ep.style_note,
-                                      framing=framing, aspect_ratio=formats.veo_aspect(formats.episode_config(ep, ch)["layout"]))
+                                      framing=framing, aspect_ratio=aspect,
+                                      location_ref=masters.get(loc))
         scene["reference_image"] = info
+        if loc and info.get("status") == "ok" and loc not in masters:
+            masters[loc] = info["path"]        # this scene establishes the place for the rest
         spent += cost
         failed += (info["status"] != "ok")
         ep.spent_usd = round(ep.spent_usd + cost, 4)
