@@ -50,6 +50,11 @@ def reference_still_prompt(scene: dict, present: list[Character], channel: Chann
                   f"same lighting so nothing looks composited"
                   if setting else "Single consistent light source so nothing looks composited")
     frozen_line = f"Frozen beat (one stable instant, at rest): {frozen}" if frozen else ""
+    # The scene text sometimes re-describes a character's clothes ("Zruv in a bright orange tank
+    # top"), which overrides the canonical costume. Restate the lock AFTER the beat so it wins.
+    lock = (f"WARDROBE LOCK: {', '.join(c.name for c in present)} must appear EXACTLY as described "
+            f"above and in the reference images — same face, build, costume and colours. IGNORE any "
+            f"clothing or appearance in the scene text that contradicts it." if present else "")
     # NOTE: intent.must_show is the scene/MOTION contract (it contains action verbs) — injecting it
     # into a STILL made the model draw one character several times (once per action). It belongs in
     # the video prompt + QC only, never in the keyframe. A short mood word is fine.
@@ -57,7 +62,7 @@ def reference_still_prompt(scene: dict, present: list[Character], channel: Chann
     compo = f"Composition: {camera}. One continuous ground plane — all characters share the same floor" \
         if camera else "One continuous ground plane — all characters share the same floor"
     prompt = ". ".join(p for p in [f"Art style: {style}", world_line, heading, subject,
-                                   frozen_line, mood_line, framing, compo, _FOOTER_STILL] if p)
+                                   frozen_line, lock, mood_line, framing, compo, _FOOTER_STILL] if p)
     refs = [p for c in present for p in c.reference_images]
     return prompt, refs
 
