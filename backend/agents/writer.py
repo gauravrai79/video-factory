@@ -103,8 +103,12 @@ def _channel_system(channel, cast_chars: list) -> str:
         f"Tone: {channel.tone} — keep every episode in this register." if getattr(channel, "tone", "") else "",
         f"Setting / world: {world}" if world else "",
         f"Visual/tone style: {channel.art_style}." if channel.art_style else "",
-        (f"LANGUAGE: write ALL spoken content — every dialogue line AND every narration/VO line — "
-         f"in {lang}. Keep the whole episode in {lang}; never narrate in English over {lang} dialogue."
+        # The show is heard in `lang`, but everything the IMAGE/VIDEO models read must be English —
+        # mixed-language description is misparsed and renders the wrong scene.
+        (f"LANGUAGE: the show is performed in {lang}. Write every SPOKEN line — all dialogue and all "
+         f"narration/VO — in {lang} (that is the actual audio; never narrate in English over {lang} "
+         f"dialogue). Write everything else — loglines, story beats, scene descriptions, camera notes "
+         f"— in ENGLISH, because the image and video models read those and misread mixed-language text."
          if lang and lang.lower() != "english" else ""),
         "",
         "CAST (keep each character's voice, traits, and relationships perfectly consistent):",
@@ -178,12 +182,17 @@ def ideate(channel, cast_chars: list, *, recent_titles: list[str] | None = None,
         return _stub_ideate(channel, n, brief)
 
     system = _channel_system(channel, cast_chars)
+    lang = (getattr(channel, "language", "") or "English").strip()
     avoid = f" Avoid repeating these existing episodes: {', '.join(recent)}." if recent else ""
     steer = f"\nThe creator's steer for these ideas (build the concepts around this): {brief}\n" if brief else ""
     user = (
         f"Propose {n} distinct, bingeable episode concepts for this series.{avoid}{steer}\n"
         "Each concept: a punchy title, a one-sentence logline, a hook (the opening beat that grabs "
         "attention), and 3-5 story beats.\n"
+        f"LANGUAGE for the concept: write the `title` catchy in {lang} or Hinglish (it is "
+        f"audience-facing), but write `logline`, `hook` and `beats` in ENGLISH so they feed the "
+        f"script + visual models cleanly. Any sample spoken line you quote inside the hook stays "
+        f"in {lang}, in quotes.\n"
         "Respond with ONLY JSON, no prose:\n"
         '{"ideas": [{"title": "...", "logline": "...", "hook": "...", "beats": ["...", "..."]}]}'
     )
