@@ -518,7 +518,8 @@ def run_stage(store, ep: Episode, *, brief: str | None = None, style_note: str |
         ep.idea_candidates = res.data["ideas"]
         _bill(ep, res)
         ep.stage_status = StageStatus.AWAITING_REVIEW.value
-        ep.log("ideate", {"n": len(ep.idea_candidates),
+        ep.log("ideate", {"failed": res.data.get("failed") or [],   # surfaced in the UI
+                          "n": len(ep.idea_candidates),
                           "models": [c.get("model_label") for c in ep.idea_candidates],
                           "cost_usd": res.cost_usd})
 

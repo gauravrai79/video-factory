@@ -439,11 +439,14 @@ function stageIdea(e, gen, ro) {
     : `<p class="muted">No idea recorded.</p>`;
   const brief = `<div class="field" style="max-width:640px"><label>Idea brief (optional — steer the concepts)</label>
     <textarea id="idea-brief" rows="2" placeholder="e.g. a rainy-night stakeout; introduce a cat burglar">${esc(e.idea_brief || "")}</textarea></div>`;
+  const failedNote = (e.idea_failed_models || []).length
+    ? `<p class="hint">${icon("x","icon")} ${e.idea_failed_models.length} model(s) returned nothing this run: <b>${e.idea_failed_models.map(esc).join(", ")}</b> — the rest are below.</p>` : "";
   if (e.stage_status === "awaiting_review" && e.idea_candidates.length) {
     return `<p class="stage-intro">Pick the best idea — the model that wrote it goes on to write the script.</p>
-      <div class="idea-col">${e.idea_candidates.map(ideaCard).join("")}</div>
+      ${failedNote}
+      <div class="idea-col"${gen ? ' style="opacity:.4;pointer-events:none"' : ""}>${e.idea_candidates.map(ideaCard).join("")}</div>
       <div style="margin:18px 0">${brief}</div>
-      <button class="btn btn-ghost" data-runidea>${icon("refresh")} Regenerate all models</button>`;
+      <button class="btn btn-ghost" data-runidea ${gen ? "disabled" : ""}>${gen ? spin() : icon("refresh")} ${gen ? "Regenerating — the panel takes 30-90s…" : "Regenerate all models"}</button>`;
   }
   return `<p class="stage-intro">A panel of models (Opus 4.8 · GPT-5.5 · DeepSeek V4 Pro · GLM 5.2) each proposes an idea at once, grounded in the channel premise + cast. Near-free.</p>
     ${brief}<div style="margin-top:14px"><button class="btn btn-primary" data-runidea ${gen ? "disabled" : ""}>${gen ? spin() : icon("sparkles")} ${gen ? "Generating…" : "Generate ideas"}</button></div>`;

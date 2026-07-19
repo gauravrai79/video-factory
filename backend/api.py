@@ -472,6 +472,9 @@ def _episode_view(ep, channel_name: str = "", ch=None) -> dict[str, Any]:
     d["rough_cut_url"] = f"/api/episodes/{ep.episode_id}/rough-cut" if tl.get("rough_cut") else None
     d["audio_cut_url"] = f"/api/episodes/{ep.episode_id}/audio-cut" if tl.get("audio_cut") else None
     d["final_url"] = f"/api/episodes/{ep.episode_id}/final" if tl.get("final_video") else None
+    # which panel models failed on the last ideate (so a silent 4->3 drop is visible)
+    last_ideate = next((h for h in reversed(ep.history or []) if h.get("event") == "ideate"), None)
+    d["idea_failed_models"] = ((last_ideate or {}).get("detail") or {}).get("failed") or []
     prev = ep.script_prev or {}   # slim (don't ship the whole prior script to the client)
     d["script_prev"] = {"scenes": len(prev.get("scenes") or []), "score": (prev.get("script_qc") or {}).get("score")}
     d["oneoff"] = bool((ep.config or {}).get("oneoff"))

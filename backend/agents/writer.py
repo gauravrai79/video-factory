@@ -198,7 +198,15 @@ def ideate(channel, cast_chars: list, *, recent_titles: list[str] | None = None,
     )
     try:
         text, usage = _chat(system, user, model, max_tokens=1800, reasoning_effort=reasoning_effort)
-        data = _parse_json(text)
+        try:
+            data = _parse_json(text)
+        except Exception:
+            # some models answer with prose/markdown instead of JSON (GLM does this consistently) —
+            # one strict retry rather than silently dropping that model from the panel
+            strict = user + ("\n\nIMPORTANT: your previous reply was not valid JSON. Reply with ONE "
+                             "raw JSON object ONLY — no prose, no explanation, no markdown fences.")
+            text, usage = _chat(system, strict, model, max_tokens=1800, temperature=0.3)
+            data = _parse_json(text)
         ideas = data.get("ideas") or []
         if not isinstance(ideas, list) or not ideas:
             raise ValueError("no ideas returned")
